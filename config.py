@@ -31,7 +31,13 @@ def _env_int(name: str, default: int = 0) -> int:
 
 def _env_str(name: str, default: str = "") -> str:
     value = os.getenv(name)
-    return value.strip() if value is not None else default
+    if value is None:
+        return default
+    val = value.strip()
+    # Strip any enclosing double or single quotes if entered by user
+    if (val.startswith('"') and val.endswith('"')) or (val.startswith("'") and val.endswith("'")):
+        val = val[1:-1].strip()
+    return val
 
 
 # ------------------------------------------------------------------
