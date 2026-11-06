@@ -61,7 +61,8 @@ async def extract_courses() -> List[Course]:
     Navigates to /ultra/course and parses all course cards.
     Directly extracts the internal ID to construct reliable direct URLs.
     """
-    target_url = f"{config.BLACKBOARD_URL}/ultra/course"
+    base_url = (config.BLACKBOARD_URL or "https://mapua.blackboard.com").rstrip("/")
+    target_url = f"{base_url}/ultra/course"
 
     logger.info("Opening courses list at %s...", target_url)
 
