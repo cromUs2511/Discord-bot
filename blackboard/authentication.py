@@ -117,7 +117,9 @@ async def login_automated() -> bool:
         page = await context.new_page()
 
         try:
-            await page.goto(config.BLACKBOARD_URL, wait_until="domcontentloaded", timeout=45000)
+            target_url = (config.BLACKBOARD_URL or "https://mapua.blackboard.com").rstrip("/")
+            logger.info("Opening login page: %s...", target_url)
+            await page.goto(target_url, wait_until="domcontentloaded", timeout=45000)
             await asyncio.sleep(2)
 
             # Dismiss Blackboard cookie/terms consent dialog if present
@@ -193,7 +195,8 @@ async def verify_session() -> bool:
     async with get_browser_context(headless=True, use_saved_state=True) as (_, _, context):
         page = await context.new_page()
 
-        test_url = f"{config.BLACKBOARD_URL.rstrip('/')}/ultra/course"
+        base_url = (config.BLACKBOARD_URL or "https://mapua.blackboard.com").rstrip("/")
+        test_url = f"{base_url}/ultra/course"
 
         try:
             await page.goto(test_url, wait_until="domcontentloaded", timeout=30000)
