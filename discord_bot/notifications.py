@@ -10,6 +10,7 @@ Rules:
 import logging
 import discord
 import config
+from database.db import db_manager
 from discord_bot.embeds import create_announcement_embed, create_activity_embed
 from blackboard.announcements import Announcement
 from blackboard.activities import Activity
@@ -17,21 +18,53 @@ from blackboard.activities import Activity
 logger = logging.getLogger("discord.notifications")
 
 
+async def _resolve_channel(client: discord.Client, channel_id: int):
+    """Get a channel from cache, falling back to an API fetch."""
+    if not channel_id:
+        return None
+    channel = client.get_channel(channel_id)
+    if channel is not None:
+        return channel
+    try:
+        return await client.fetch_channel(channel_id)
+    except Exception:
+        return None
+
+
 async def send_announcement_notification(client: discord.Client, announcement: Announcement, is_update: bool = False):
     """
-    Sends an announcement STRICTLY to its respective course channel only.
+    Sends an announcement STRICTLY to its respective course channel only with mention/ping.
+    Guarantees zero duplicate notifications via notification_history deduplication.
     """
-    target_channel_id = config.get_course_channel_id(announcement.course_id, announcement.course_name)
+    # Deduplicate: if this announcement with this exact fingerprint was already sent, skip
+    if await db_manager.has_notification_been_sent("announcement", announcement.id, announcement.fingerprint):
+        logger.info(
+            "Skipping duplicate announcement notification for [%s]: %s",
+            announcement.id,
+            announcement.title,
+        )
+        return
 
-    channel = client.get_channel(target_channel_id)
+    target_channel_id = config.get_course_channel_id(announcement.course_id, announcement.course_name)
+    channel = await _resolve_channel(client, target_channel_id)
     if not channel:
         logger.warning("Channel ID %s not found for course [%s].", target_channel_id, announcement.course_id)
         return
 
     embed = create_announcement_embed(announcement, is_update=is_update)
+    content = config.NOTIFICATION_PING.strip() if config.NOTIFICATION_PING else None
+
     try:
-        await channel.send(embed=embed)
-        logger.info("Sent announcement strictly to channel #%s: %s", channel.name, announcement.title)
+        await channel.send(
+            content=content,
+            embed=embed,
+            allowed_mentions=discord.AllowedMentions(everyone=True, roles=True, users=True),
+        )
+        logger.info("Sent announcement strictly to channel #%s: %s (Ping: %s)", channel.name, announcement.title, content)
+        try:
+            await db_manager.record_notification("announcement", announcement.id, announcement.fingerprint)
+        except Exception as e:
+            logger.warning("Could not record notification history: %s", e)
     except Exception as e:
         logger.error("Failed to send announcement to channel %s: %s", channel.name, e)
 
@@ -43,18 +76,39 @@ async def send_activity_notification(
     old_deadline: str | None = None
 ):
     """
-    Sends activity/deadline notifications STRICTLY to its respective course channel only.
+    Sends activity/deadline notifications STRICTLY to its respective course channel only with mention/ping.
+    Guarantees zero duplicate notifications via notification_history deduplication.
     """
+    item_type = "deadline_change" if event_type == "deadline_changed" else "activity"
+    if await db_manager.has_notification_been_sent(item_type, activity.id, activity.fingerprint):
+        logger.info(
+            "Skipping duplicate %s notification for [%s]: %s",
+            item_type,
+            activity.id,
+            activity.title,
+        )
+        return
+
     target_channel_id = config.get_course_channel_id(activity.course_id, activity.course_name)
-    channel = client.get_channel(target_channel_id)
+    channel = await _resolve_channel(client, target_channel_id)
 
     if not channel:
         logger.warning("Channel ID %s not found for course [%s].", target_channel_id, activity.course_id)
         return
 
     embed = create_activity_embed(activity, event_type=event_type, old_deadline=old_deadline)
+    content = config.NOTIFICATION_PING.strip() if config.NOTIFICATION_PING else None
+
     try:
-        await channel.send(embed=embed)
-        logger.info("Sent activity notification strictly to channel #%s: %s (Type: %s)", channel.name, activity.title, event_type)
+        await channel.send(
+            content=content,
+            embed=embed,
+            allowed_mentions=discord.AllowedMentions(everyone=True, roles=True, users=True),
+        )
+        logger.info("Sent activity notification strictly to channel #%s: %s (Type: %s, Ping: %s)", channel.name, activity.title, event_type, content)
+        try:
+            await db_manager.record_notification(item_type, activity.id, activity.fingerprint)
+        except Exception as e:
+            logger.warning("Could not record notification history: %s", e)
     except Exception as e:
         logger.error("Failed to send activity notification to channel %s: %s", channel.name, e)

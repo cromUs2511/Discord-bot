@@ -9,9 +9,7 @@ Handles:
 
 import asyncio
 import logging
-import pathlib
 import time
-from playwright.async_api import Page, TimeoutError as PlaywrightTimeoutError
 
 import config
 from blackboard.browser import (
@@ -49,7 +47,7 @@ async def login_interactive() -> bool:
 
     print("\n" + "=" * 65)
     print("👉 A browser window will now open.")
-    print("👉 Log into your Mapúa Blackboard account as you normally do.")
+    print(f"👉 Log into your {config.INSTITUTION_NAME} Blackboard account as you normally do.")
     print("👉 Complete any Microsoft / MFA / 2FA prompts.")
     print("👉 Check 'Stay signed in' if prompted.")
     print("👉 The script will automatically detect when you reach the dashboard!")
@@ -119,7 +117,7 @@ async def verify_session() -> bool:
         test_url = f"{config.BLACKBOARD_URL.rstrip('/')}/ultra/course"
 
         try:
-            response = await page.goto(test_url, wait_until="domcontentloaded", timeout=30000)
+            await page.goto(test_url, wait_until="domcontentloaded", timeout=30000)
             await asyncio.sleep(3)  # Wait for single-page app (SPA) router to redirect if expired
         except Exception as e:
             logger.error("Failed to navigate during session verification: %s", e)

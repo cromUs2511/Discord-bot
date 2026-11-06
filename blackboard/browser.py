@@ -6,14 +6,12 @@ with saved storage states (cookies/local storage).
 """
 
 import logging
-import pathlib
 from typing import AsyncGenerator
 from contextlib import asynccontextmanager
 from playwright.async_api import (
     async_playwright,
     Browser,
     BrowserContext,
-    Page,
     Playwright,
 )
 import config
@@ -35,15 +33,32 @@ async def get_browser_context(
     If `use_saved_state` is True and `session.json` exists, the context
     is initialized with pre-existing session cookies and local storage.
     """
+    browser_args = [
+        "--disable-blink-features=AutomationControlled",
+        "--no-sandbox",
+        "--disable-dev-shm-usage",
+        "--disable-gpu",
+    ]
+
     async with async_playwright() as pw:
-        # Launch Chromium with anti-detection args suitable for student portals
-        browser = await pw.chromium.launch(
-            headless=headless,
-            args=[
-                "--disable-blink-features=AutomationControlled",
-                "--no-sandbox",
-            ],
-        )
+        try:
+            browser = await pw.chromium.launch(
+                headless=headless,
+                args=browser_args,
+            )
+        except Exception as e:
+            err_msg = str(e).lower()
+            if "executable doesn't exist" in err_msg or "please run" in err_msg:
+                logger.info("Playwright Chromium browser missing. Installing automatically...")
+                import subprocess
+                import sys
+                subprocess.run([sys.executable, "-m", "playwright", "install", "chromium"], check=True)
+                browser = await pw.chromium.launch(
+                    headless=headless,
+                    args=browser_args,
+                )
+            else:
+                raise
 
         storage_state_arg = (
             str(SESSION_STORAGE_PATH)
@@ -51,14 +66,12 @@ async def get_browser_context(
             else None
         )
 
+        # Do not override the user agent: Playwright's bundled Chromium UA
+        # matches the actual browser version, which reduces SSO/bot-detection
+        # mismatches.
         context = await browser.new_context(
             storage_state=storage_state_arg,
             viewport={"width": 1280, "height": 800},
-            user_agent=(
-                "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
-                "AppleWebKit/537.36 (KHTML, like Gecko) "
-                "Chrome/124.0.0.0 Safari/537.36"
-            ),
         )
 
         try:

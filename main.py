@@ -5,6 +5,12 @@ main.py — Entry point for the Blackboard Discord Academic Assistant.
 import asyncio
 import logging
 import sys
+from pathlib import Path
+
+# Ensure project root is in sys.path so modules like discord_bot are always found
+PROJECT_ROOT = Path(__file__).resolve().parent
+if str(PROJECT_ROOT) not in sys.path:
+    sys.path.insert(0, str(PROJECT_ROOT))
 
 import config
 from discord_bot.bot import create_bot

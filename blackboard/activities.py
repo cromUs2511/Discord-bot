@@ -9,10 +9,70 @@ Extracts activity title, due date, status, points, and course ID from both:
 import asyncio
 import hashlib
 import logging
+import re
 from dataclasses import dataclass
-from typing import List, Optional, Dict
+from typing import Any, Dict, List, Optional
+
+from utils.dates import parse_due_datetime
 
 logger = logging.getLogger("blackboard.activities")
+
+# Tokens that identify table headers rather than real coursework.
+_HEADER_TITLES = {
+    "coursework",
+    "coursework name",
+    "item",
+    "item name",
+    "assignment",
+    "assignment name",
+    "due date",
+    "status",
+    "grade",
+    "grading",
+    "points",
+    "points possible",
+    "submission",
+    "submissions",
+    "attempts",
+    "student",
+    "name",
+    "overall grade",
+    "last activity",
+}
+
+_DATE_RE = re.compile(
+    r"^\d{1,2}/\d{1,2}/\d{2,4}(?:\s+\d{1,2}:\d{2}\s*[AP]M)?$", re.IGNORECASE
+)
+_POINTS_RE = re.compile(r"^\d+(?:\.\d+)?\s*/\s*\d+(?:\.\d+)?$")
+_TITLE_SUFFIX_RE = re.compile(r"\s+(?:submission|assignment)$", re.IGNORECASE)
+
+
+def canonical_title(title: str) -> str:
+    """
+    Normalize a title so the To Do feed and the gradebook produce the same ID.
+
+    Blackboard often labels the same item "Coursework 1.1" in To Do and
+    "Coursework 1.1 Submission" in the gradebook.
+    """
+    cleaned = " ".join((title or "").split()).strip()
+    return _TITLE_SUFFIX_RE.sub("", cleaned).strip()
+
+
+def stable_activity_id(course_id: str, title: str) -> str:
+    raw_id = f"{course_id}_{canonical_title(title)}"
+    return hashlib.md5(raw_id.encode("utf-8")).hexdigest()[:16]
+
+
+def activity_fingerprint(
+    course_id: str,
+    title: str,
+    due_date: Optional[str],
+    status: Optional[str],
+) -> str:
+    # Use the canonical title so the To Do panel and gradebook do not fight
+    # over "Coursework 1.1" vs "Coursework 1.1 Submission".
+    raw = f"{course_id}:{canonical_title(title)}:{due_date}:{status}"
+    return hashlib.sha256(raw.encode("utf-8")).hexdigest()
 
 
 @dataclass
@@ -28,93 +88,164 @@ class Activity:
 
     @property
     def fingerprint(self) -> str:
-        """Stable hash used for change detection (e.g. deadline changes)."""
-        raw = f"{self.course_id}:{self.title}:{self.due_date}:{self.status}"
-        return hashlib.sha256(raw.encode("utf-8")).hexdigest()
+        """Stable hash used for change detection."""
+        return activity_fingerprint(
+            self.course_id, self.title, self.due_date, self.status
+        )
+
+
+def _course_lookup(courses: list) -> tuple[Dict[str, Any], Dict[str, Any], Dict[str, Any]]:
+    """Build lookup tables for internal ID, full course ID, and course name."""
+    by_internal: Dict[str, Any] = {}
+    by_id: Dict[str, Any] = {}
+    by_name: Dict[str, Any] = {}
+    for course in courses:
+        internal_id = getattr(course, "internal_id", None)
+        if internal_id:
+            by_internal[str(internal_id).strip().lower()] = course
+        if getattr(course, "id", None):
+            by_id[str(course.id).strip().lower()] = course
+        if getattr(course, "name", None):
+            by_name[str(course.name).strip().lower()] = course
+    return by_internal, by_id, by_name
+
+
+def _match_course(
+    meta_line: str,
+    course_name_hint: str,
+    internal_id_hint: str,
+    courses: list,
+) -> Optional[Any]:
+    """Resolve a To Do metadata line to a known course."""
+    by_internal, by_id, by_name = _course_lookup(courses)
+
+    for key in (internal_id_hint, course_name_hint):
+        normalized = (key or "").strip().lower()
+        if normalized:
+            if normalized in by_internal:
+                return by_internal[normalized]
+            if normalized in by_id:
+                return by_id[normalized]
+            if normalized in by_name:
+                return by_name[normalized]
+
+    meta_lower = meta_line.lower()
+    for course in courses:
+        course_id = str(getattr(course, "id", "") or "").lower()
+        course_name = str(getattr(course, "name", "") or "").lower()
+        internal_id = str(getattr(course, "internal_id", "") or "").lower()
+        if course_id and course_id in meta_lower:
+            return course
+        if course_name and course_name in meta_lower:
+            return course
+        if internal_id and internal_id in meta_lower:
+            return course
+
+    return None
 
 
 async def extract_todo_activities(page, courses: list) -> List[Activity]:
     """
-    Extracts pending/upcoming activities directly from the 'To Do / Due Soon' panel
-    on the Blackboard Courses page (/ultra/course).
+    Extracts pending/upcoming activities directly from the 'To Do / Due Soon'
+    panel on the Blackboard Courses page (/ultra/course).
     """
     activities: List[Activity] = []
 
-    # Map internal IDs (_170077_1) and names to course objects
-    course_by_internal: Dict[str, any] = {}
-    course_by_name: Dict[str, any] = {}
-    for c in courses:
-        if getattr(c, "internal_id", None):
-            course_by_internal[c.internal_id] = c
-        course_by_name[c.name.strip().lower()] = c
-
-    raw_items = await page.evaluate(r"""() => {
+    raw_items = await page.evaluate(
+        r"""() => {
         const results = [];
         const elements = document.querySelectorAll('li, div[role="listitem"], .stream-entry');
         elements.forEach(el => {
             const text = (el.innerText || '').trim();
-            if ((text.includes('·') || text.includes('Assignment') || text.includes('Test')) && (text.includes('PM') || text.includes('AM'))) {
+            if ((text.includes('·') || text.includes('•') || text.includes('Assignment') || text.includes('Test'))
+                && (text.includes('PM') || text.includes('AM'))) {
                 if (text.length > 20 && text.length < 350) {
                     results.push(text);
                 }
             }
         });
         return [...new Set(results)];
-    }""")
+    }"""
+    )
 
     for item in raw_items:
-        lines = [l.strip() for l in item.split("\n") if l.strip()]
-        # Expected structure:
-        # ['Nov', '8', 'Title', 'Type · CourseName · InternalID', 'Day · MM/DD/YY · Time']
-        if len(lines) < 4:
+        lines = [line.strip() for line in item.split("\n") if line.strip()]
+        if len(lines) < 3:
             continue
 
-        # Locate title: typically after month/day
-        title = lines[2] if len(lines) >= 5 else lines[0]
         meta_line = ""
         date_line = ""
-
         for line in lines:
-            if "·" in line and any(k in line for k in ["Assignment", "Test", "_"]):
-                meta_line = line
-            elif "·" in line and ("AM" in line or "PM" in line):
-                date_line = line
+            if "·" in line or "•" in line:
+                if re.search(r"\d{1,2}/\d{1,2}/\d{2,4}", line):
+                    date_line = line
+                if any(
+                    keyword in line
+                    for keyword in ("Assignment", "Test", "Quiz", "Exam", "_")
+                ):
+                    meta_line = line
 
         if not meta_line:
             continue
 
-        meta_parts = [p.strip() for p in meta_line.split("·")]
+        meta_parts = [
+            part.strip()
+            for part in re.split(r"[·•]", meta_line)
+            if part.strip()
+        ]
         course_name_hint = meta_parts[1] if len(meta_parts) > 1 else ""
         internal_id_hint = meta_parts[2] if len(meta_parts) > 2 else ""
 
-        # Find matching course
-        matched_course = course_by_internal.get(internal_id_hint)
-        if not matched_course and course_name_hint:
-            matched_course = course_by_name.get(course_name_hint.lower())
+        matched_course = _match_course(
+            meta_line, course_name_hint, internal_id_hint, courses
+        )
+        if not matched_course:
+            # Never insert an orphan row that JOIN-based queries cannot display.
+            logger.warning(
+                "Skipping To Do item with unrecognized course metadata: %s",
+                meta_line,
+            )
+            continue
 
-        course_id = matched_course.id if matched_course else internal_id_hint or "UNKNOWN_COURSE"
-        course_name = matched_course.name if matched_course else course_name_hint or course_id
+        # Choose a title line, skipping the month/day tokens and metadata lines.
+        title_candidates = [
+            line
+            for line in lines
+            if line not in (meta_line, date_line)
+            and not re.fullmatch(r"[A-Z][a-z]{2,8}", line)
+            and not re.fullmatch(r"\d{1,2}", line)
+        ]
+        title = title_candidates[0] if title_candidates else lines[0]
+        if not title:
+            continue
 
-        # Parse due date & time
-        due_date_str = None
+        due_date_str: Optional[str] = None
         if date_line:
-            date_parts = [p.strip() for p in date_line.split("·")]
-            # e.g. ['Sun', '11/8/26', '11:59 PM']
-            if len(date_parts) >= 3:
-                due_date_str = f"{date_parts[1]} {date_parts[2]}"
-            elif len(date_parts) == 2:
-                due_date_str = f"{date_parts[0]} {date_parts[1]}"
+            match = re.search(
+                r"(\d{1,2}/\d{1,2}/\d{2,4})(?:\s*[·•]\s*(\d{1,2}:\d{2}\s*[AP]M))?",
+                date_line,
+                re.IGNORECASE,
+            )
+            if match:
+                due_date_str = match.group(1)
+                if match.group(2):
+                    due_date_str = f"{due_date_str} {match.group(2)}"
             else:
-                due_date_str = date_line
-
-        raw_id = f"{course_id}_{title}"
-        stable_id = hashlib.md5(raw_id.encode("utf-8")).hexdigest()[:16]
+                date_parts = [
+                    part.strip()
+                    for part in re.split(r"[·•]", date_line)
+                    if part.strip()
+                ]
+                if len(date_parts) >= 3:
+                    due_date_str = f"{date_parts[1]} {date_parts[2]}"
+                elif date_parts:
+                    due_date_str = " ".join(date_parts)
 
         activities.append(
             Activity(
-                id=stable_id,
-                course_id=course_id,
-                course_name=course_name,
+                id=stable_activity_id(matched_course.id, title),
+                course_id=matched_course.id,
+                course_name=matched_course.name,
                 title=title,
                 due_date=due_date_str,
                 status="Not submitted",
@@ -127,7 +258,9 @@ async def extract_todo_activities(page, courses: list) -> List[Activity]:
     return activities
 
 
-async def extract_course_activities(page, course_id: str, course_name: str) -> List[Activity]:
+async def extract_course_activities(
+    page, course_id: str, course_name: str
+) -> List[Activity]:
     """
     Extracts activities and deadlines from the course Gradebook tab.
     Assumes `page` is currently loaded on the course outline page.
@@ -150,7 +283,8 @@ async def extract_course_activities(page, course_id: str, course_name: str) -> L
         return activities
 
     # Parse rows in the gradebook
-    raw_rows = await page.evaluate(r"""() => {
+    raw_rows = await page.evaluate(
+        r"""() => {
         const rows = [];
         const trs = document.querySelectorAll('tbody tr, [role="row"], .gradebook-row');
 
@@ -170,39 +304,42 @@ async def extract_course_activities(page, course_id: str, course_name: str) -> L
         });
 
         return rows;
-    }""")
+    }"""
+    )
 
     for row in raw_rows:
-        row_text = " | ".join(row)
-        # Skip student name header or empty rows
-        if "LORENZO KOLLIN" in row_text.upper() or len(row) == 0:
+        if not row:
             continue
 
-        title = row[0]
+        title = row[0].strip()
+        if not title or title.lower() in _HEADER_TITLES:
+            continue
+
         due_date = None
         points = None
 
-        # Determine due date and points from cells
         for cell in row[1:]:
-            cell_lower = cell.lower()
-            if "/" in cell and any(c.isdigit() for c in cell) and not ("graded" in cell_lower or "submitted" in cell_lower):
-                # Only treat as due_date if it's not a fraction like 1/1
-                if any(delim in cell for delim in ["/26", "/25", "/24", "/27", "/23", "/22"]):
-                    due_date = cell
-                elif not due_date and len(cell.split("/")) == 3:
-                    due_date = cell
+            stripped = cell.strip()
+            cell_lower = stripped.lower()
+
+            if _POINTS_RE.fullmatch(stripped):
+                points = stripped
+            elif "%" in stripped:
+                points = stripped
             elif "ongoing" in cell_lower:
                 due_date = "Ongoing"
-            elif "/" in cell and cell.replace("/", "").strip().isdigit():
-                points = cell
-            elif "%" in cell:
-                points = cell
+            elif _DATE_RE.fullmatch(stripped) or parse_due_datetime(stripped):
+                due_date = stripped
 
         # Strict Submission & Grading Status Evaluation:
         # If any cell contains "submitted" or "attempt", it IS submitted!
         # Do not let "Not graded" overwrite the fact that student submitted it.
-        is_submitted = any("submitted" in c.lower() or "attempt" in c.lower() for c in row[1:])
-        is_graded = any(c.lower() == "graded" or "final grade" in c.lower() for c in row[1:])
+        is_submitted = any(
+            "submitted" in c.lower() or "attempt" in c.lower() for c in row[1:]
+        )
+        is_graded = any(
+            c.lower() == "graded" or "final grade" in c.lower() for c in row[1:]
+        )
 
         if is_graded:
             status = "Graded"
@@ -212,18 +349,16 @@ async def extract_course_activities(page, course_id: str, course_name: str) -> L
             # Check for past due or not submitted
             found_status = None
             for cell in row[1:]:
-                cl = cell.lower()
-                if "past due" in cl or "overdue" in cl:
+                cell_lower = cell.lower()
+                if "past due" in cell_lower or "overdue" in cell_lower:
                     found_status = "Past due"
-                elif "not submitted" in cl:
+                elif "not submitted" in cell_lower:
                     found_status = "Not submitted"
             status = found_status or "Not submitted"
 
-        stable_id = hashlib.md5(f"{course_id}_{title}".encode("utf-8")).hexdigest()[:16]
-
         activities.append(
             Activity(
-                id=stable_id,
+                id=stable_activity_id(course_id, title),
                 course_id=course_id,
                 course_name=course_name,
                 title=title,

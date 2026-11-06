@@ -101,7 +101,15 @@ Blackboard Announcement BOT/
 
 ---
 
-### 5. CLOUD HOSTING & PRODUCTION CONSIDERATIONS
+### 5. REAL-TIME MENTIONS & CHANNEL NOTIFICATIONS
+
+- **Automated Pings:** Whenever new announcements or added/changed coursework activities are detected during background sync passes, the bot attaches a mention (e.g. `@everyone` or `@here`) to the message so members are actively notified.
+- **Configurable via `.env`:** Set `NOTIFICATION_PING=@everyone` or `NOTIFICATION_PING=@here` (or leave empty `NOTIFICATION_PING=` to disable pings).
+- **Subject Channel Isolation:** Notifications are dispatched strictly to their dedicated course channel (`#circuits-lecture`, `#circuits-lab`, `#feedback-and-control`, `#thesis-1`), or `#announcements` for unmapped courses.
+
+---
+
+### 6. CLOUD HOSTING & PRODUCTION CONSIDERATIONS
 
 - **Why Render Free Tier is Incompatible:** Render free web services have 512MB RAM (causing Chromium to OOM crash) and ephemeral disks (which wipe `session.json` and `academic_assistant.db` on restart/sleep).
 - **Recommended Cloud Deployment:** A low-cost permanent Linux VPS (DigitalOcean Droplet, Hetzner, Linode, or AWS Lightsail with 1–2GB RAM) running Docker or a systemd service, or a dedicated home server/Raspberry Pi.

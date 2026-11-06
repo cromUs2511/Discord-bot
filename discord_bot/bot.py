@@ -18,8 +18,9 @@ class AcademicAssistantBot(discord.Client):
     def __init__(self):
         intents = discord.Intents.default()
         intents.message_content = True
+        allowed_mentions = discord.AllowedMentions(everyone=True, roles=True, users=True)
 
-        super().__init__(intents=intents)
+        super().__init__(intents=intents, allowed_mentions=allowed_mentions)
         self.tree = app_commands.CommandTree(self)
         self.synchronizer = BlackboardSynchronizer(discord_client=self)
         self.scheduler = None

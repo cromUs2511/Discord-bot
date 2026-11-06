@@ -48,5 +48,7 @@ logs/
 # of committing them to the repo.
 
 # ===== Misc =====
+*.zip
+*.tar.gz
 *.bak
 *.tmp

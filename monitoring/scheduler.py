@@ -16,7 +16,7 @@ def setup_scheduler(synchronizer: BlackboardSynchronizer) -> AsyncIOScheduler:
     """Configures and returns an AsyncIOScheduler for periodic sync."""
     scheduler = AsyncIOScheduler(timezone=config.TIMEZONE)
 
-    interval_minutes = max(5, config.SYNC_INTERVAL_MINUTES)
+    interval_minutes = max(1, config.SYNC_INTERVAL_MINUTES)
     logger.info("Setting up background sync job every %d minutes (Timezone: %s)", interval_minutes, config.TIMEZONE)
 
     scheduler.add_job(
