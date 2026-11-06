@@ -83,7 +83,7 @@ class BlackboardSynchronizer:
                 summary["status"] = "error"
                 summary["message"] = (
                     "No saved Blackboard session found. Set BLACKBOARD_USERNAME & "
-                    "BLACKBOARD_PASSWORD in .env for automated login, or provide BLACKBOARD_SESSION_DATA."
+                    "BLACKBOARD_PASSWORD in your environment variables for 100% automated login."
                 )
                 self.session_valid = False
                 return summary
@@ -96,20 +96,26 @@ class BlackboardSynchronizer:
 
             if not courses:
                 # Distinguish "expired session" from "genuinely zero courses".
+                # verify_session() will autonomously attempt automated login if credentials exist!
                 valid = await verify_session()
+                if valid:
+                    # Retry extraction after successful auto-login
+                    courses = await extract_courses()
+                    summary["courses_discovered"] = len(courses)
+
                 self.session_valid = valid
-                if not valid:
-                    summary["status"] = "error"
-                    summary["message"] = (
-                        "Blackboard returned no courses and the saved session is "
-                        "expired or invalid. Re-run the interactive login."
-                    )
-                else:
-                    summary["message"] = (
-                        "No courses were found on the dashboard, but the session "
-                        "is valid."
-                    )
-                return summary
+                if not courses:
+                    if not valid:
+                        summary["status"] = "error"
+                        summary["message"] = (
+                            "Blackboard session expired and automated login failed. "
+                            "Please verify your BLACKBOARD_USERNAME and BLACKBOARD_PASSWORD."
+                        )
+                    else:
+                        summary["message"] = (
+                            "No courses were found on the dashboard, but the session is valid."
+                        )
+                    return summary
 
             self.session_valid = True
             logger.info("Discovered %d course(s). Updating database...", len(courses))

@@ -53,6 +53,13 @@ class AcademicAssistantBot(discord.Client):
         for g in self.guilds:
             logger.info(" - %s (ID: %s)", g.name, g.id)
 
+        # Automatically trigger an initial sync pass on startup so courses and announcements are primed
+        if not hasattr(self, "_initial_sync_started"):
+            self._initial_sync_started = True
+            import asyncio
+            logger.info("Triggering initial background Blackboard sync on bot startup...")
+            asyncio.create_task(self.synchronizer.run_sync(notify=True))
+
 
 def create_bot() -> AcademicAssistantBot:
     return AcademicAssistantBot()

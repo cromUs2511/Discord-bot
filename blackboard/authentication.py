@@ -102,12 +102,13 @@ async def login_interactive() -> bool:
 async def login_automated() -> bool:
     """
     Attempts headless automated login using BLACKBOARD_USERNAME and BLACKBOARD_PASSWORD.
-    Automatically enters credentials into the login form and saves session state.
+    Automatically handles cookie/terms consent dialogs, enters credentials,
+    submits the form, and saves session state to `data/auth_state/session.json`.
     """
     username = config.BLACKBOARD_USERNAME
     password = config.BLACKBOARD_PASSWORD
     if not username or not password:
-        logger.info("Automated login skipped: BLACKBOARD_USERNAME and/or BLACKBOARD_PASSWORD not set in .env.")
+        logger.info("Automated login skipped: BLACKBOARD_USERNAME and/or BLACKBOARD_PASSWORD not set in environment.")
         return False
 
     logger.info("Attempting automated headless login for: %s...", username)
@@ -119,18 +120,43 @@ async def login_automated() -> bool:
             await page.goto(config.BLACKBOARD_URL, wait_until="domcontentloaded", timeout=45000)
             await asyncio.sleep(2)
 
-            # Check for standard Blackboard Ultra login inputs
+            # Dismiss Blackboard cookie/terms consent dialog if present
+            if await page.locator("#agree_button").count() > 0:
+                logger.info("Dismissing Blackboard consent banner (#agree_button)...")
+                try:
+                    await page.click("#agree_button", timeout=4000)
+                    await asyncio.sleep(1)
+                except Exception as e:
+                    logger.debug("Consent dialog dismiss note: %s", e)
+
+            # Check for standard Blackboard login inputs
             if await page.locator("#user_id").count() > 0:
-                logger.info("Filling in login credentials...")
+                logger.info("Filling in Blackboard login credentials...")
                 await page.fill("#user_id", username)
                 await page.fill("#password", password)
-                await page.click("#entry-login")
+                # Use force=True so any overlaying dialog doesn't block submission
+                await page.locator("#entry-login").click(force=True)
 
                 # Wait up to 30 seconds for redirect into Blackboard Ultra
                 for _ in range(15):
                     await asyncio.sleep(2)
                     if await is_authenticated_url(page.url):
                         break
+
+            # Handle Microsoft SSO redirect if required by institution
+            if "login.microsoftonline.com" in page.url.lower():
+                logger.info("Detected Microsoft SSO redirect, handling login...")
+                if await page.locator('input[type="email"], input[name="loginfmt"]').count() > 0:
+                    await page.fill('input[type="email"], input[name="loginfmt"]', username)
+                    await page.click('input[type="submit"], #idSIButton9')
+                    await asyncio.sleep(2)
+                if await page.locator('input[type="password"], input[name="passwd"]').count() > 0:
+                    await page.fill('input[type="password"], input[name="passwd"]', password)
+                    await page.click('input[type="submit"], #idSIButton9')
+                    await asyncio.sleep(2)
+                if await page.locator('#idSIButton9').count() > 0:
+                    await page.click('#idSIButton9')
+                    await asyncio.sleep(2)
 
             if await is_authenticated_url(page.url):
                 SESSION_STORAGE_PATH.parent.mkdir(parents=True, exist_ok=True)
