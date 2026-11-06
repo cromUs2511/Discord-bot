@@ -11,7 +11,7 @@ import config
 from blackboard.browser import get_browser_context
 from blackboard.courses import extract_courses
 from blackboard.announcements import extract_course_announcements
-from blackboard.activities import extract_course_activities
+from blackboard.activities import extract_course_activities, extract_todo_activities
 from database.db import db_manager
 from discord_bot.notifications import (
     send_announcement_notification,
@@ -66,6 +66,25 @@ class BlackboardSynchronizer:
 
             async with get_browser_context(headless=True, use_saved_state=True) as (_, _, context):
                 page = await context.new_page()
+
+                # Step 1.5: Extract 'To Do / Due Soon' items directly from the Courses page
+                try:
+                    logger.info("Extracting 'To Do / Due Soon' panel from courses dashboard...")
+                    await page.goto(f"{config.BLACKBOARD_URL.rstrip('/')}/ultra/course", wait_until="domcontentloaded", timeout=30000)
+                    await asyncio.sleep(4)
+                    todo_acts = await extract_todo_activities(page, courses)
+                    act_changes = await db_manager.process_activities(todo_acts)
+                    for act, change_type, old_deadline in act_changes:
+                        if change_type == "new":
+                            summary["new_activities"] += 1
+                            if notify and self.client:
+                                await send_activity_notification(self.client, act, event_type="new")
+                        elif change_type == "deadline_changed":
+                            summary["deadline_changes"] += 1
+                            if notify and self.client:
+                                await send_activity_notification(self.client, act, event_type="deadline_changed", old_deadline=old_deadline)
+                except Exception as e:
+                    logger.error("Error extracting To Do activities: %s", e)
 
                 for course in open_courses:
                     logger.info("Processing course: [%s] %s...", course.id, course.name)

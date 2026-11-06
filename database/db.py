@@ -15,6 +15,45 @@ from blackboard.activities import Activity
 logger = logging.getLogger("database")
 
 
+def is_genuine_deadline_change(old_due: Optional[str], new_due: Optional[str]) -> bool:
+    """
+    Checks if a deadline change is genuine rather than just a formatting difference
+    (e.g. '11/8/26' vs '11/8/26 11:59 PM').
+    """
+    if not old_due or not new_due:
+        return old_due != new_due
+
+    o = old_due.strip()
+    n = new_due.strip()
+
+    if o == n:
+        return False
+
+    # If one is just the prefix date of the other (same date, one has time), not a change!
+    if o.startswith(n) or n.startswith(o):
+        return False
+
+    from datetime import datetime
+    def parse_dt(s):
+        for fmt in ("%m/%d/%y %I:%M %p", "%m/%d/%Y %I:%M %p", "%m/%d/%y", "%m/%d/%Y"):
+            try:
+                return datetime.strptime(s, fmt)
+            except ValueError:
+                continue
+        return None
+
+    dt_old = parse_dt(o)
+    dt_new = parse_dt(n)
+
+    if dt_old and dt_new:
+        # If one lacks time, compare date only
+        if ":" not in o or ":" not in n:
+            return dt_old.date() != dt_new.date()
+        return dt_old != dt_new
+
+    return o != n
+
+
 class DatabaseManager:
     def __init__(self, db_path=config.DATABASE_PATH):
         self.db_path = str(db_path)
@@ -124,8 +163,14 @@ class DatabaseManager:
                     changes.append((act, "new", None))
                 else:
                     old_due = row["due_date"]
-                    if old_due != act.due_date:
-                        # Deadline changed!
+                    # Retain richer timestamp if one source includes time and the other is date-only
+                    resolved_due = act.due_date
+                    if old_due and act.due_date:
+                        if ":" in old_due and ":" not in act.due_date and old_due.startswith(act.due_date):
+                            resolved_due = old_due  # Keep existing time!
+
+                    if is_genuine_deadline_change(old_due, act.due_date):
+                        # Genuinely changed calendar date!
                         await db.execute(
                             """
                             UPDATE activities SET
@@ -136,21 +181,22 @@ class DatabaseManager:
                                 last_detected_at = CURRENT_TIMESTAMP
                             WHERE id = ?
                             """,
-                            (act.due_date, act.status, act.points, act.fingerprint, act.id),
+                            (resolved_due, act.status, act.points, act.fingerprint, act.id),
                         )
                         changes.append((act, "deadline_changed", old_due))
-                    elif row["fingerprint"] != act.fingerprint:
-                        # Status/points updated
+                    elif row["fingerprint"] != act.fingerprint or row["due_date"] != resolved_due:
+                        # Status/points updated or time enriched quietly without triggering a false alert
                         await db.execute(
                             """
                             UPDATE activities SET
+                                due_date = ?,
                                 status = ?,
                                 points = ?,
                                 fingerprint = ?,
                                 last_detected_at = CURRENT_TIMESTAMP
                             WHERE id = ?
                             """,
-                            (act.status, act.points, act.fingerprint, act.id),
+                            (resolved_due, act.status, act.points, act.fingerprint, act.id),
                         )
 
             await db.commit()
@@ -216,8 +262,14 @@ class DatabaseManager:
                 """
                 SELECT act.*, c.name as course_name FROM activities act
                 JOIN courses c ON act.course_id = c.id
-                WHERE LOWER(act.status) NOT LIKE '%submitted%'
-                  AND LOWER(act.status) NOT LIKE '%graded%'
+                WHERE (
+                    act.status IS NULL 
+                    OR (
+                        LOWER(act.status) NOT IN ('submitted', 'graded')
+                        AND LOWER(act.status) NOT LIKE '%attempt submitted%'
+                        AND LOWER(act.status) NOT LIKE '%1 attempt submitted%'
+                    )
+                )
                 ORDER BY act.due_date ASC, act.title ASC
                 """
             )
@@ -253,12 +305,14 @@ class DatabaseManager:
 
             dd = a.get("due_date")
             if dd and dd.lower() != "ongoing":
-                try:
-                    due_dt = datetime.strptime(dd, "%m/%d/%y")
-                    if due_dt < now:
-                        overdue.append(a)
-                except ValueError:
-                    pass
+                for fmt in ("%m/%d/%y %I:%M %p", "%m/%d/%Y %I:%M %p", "%m/%d/%y", "%m/%d/%Y", "%Y-%m-%d"):
+                    try:
+                        due_dt = datetime.strptime(dd.strip(), fmt)
+                        if due_dt < now:
+                            overdue.append(a)
+                        break
+                    except ValueError:
+                        continue
 
         return overdue
 

@@ -35,9 +35,25 @@ def parse_date(date_str: Optional[str]) -> Optional[datetime]:
     if not date_str:
         return None
     cleaned = date_str.strip()
-    for fmt in ("%m/%d/%y", "%m/%d/%Y", "%Y-%m-%d", "%b %d, %Y"):
+    for fmt in (
+        "%m/%d/%y %I:%M %p",
+        "%m/%d/%Y %I:%M %p",
+        "%m/%d/%y %H:%M",
+        "%m/%d/%Y %H:%M",
+        "%Y-%m-%d %H:%M:%S",
+        "%Y-%m-%d",
+        "%m/%d/%y",
+        "%m/%d/%Y",
+        "%b %d, %Y",
+    ):
         try:
             return datetime.strptime(cleaned, fmt)
+        except ValueError:
+            continue
+    first_token = cleaned.split()[0]
+    for fmt in ("%m/%d/%y", "%m/%d/%Y", "%Y-%m-%d"):
+        try:
+            return datetime.strptime(first_token, fmt)
         except ValueError:
             continue
     return None
@@ -126,11 +142,20 @@ def register_commands(tree: app_commands.CommandTree, synchronizer, guild_obj: d
         embed.add_field(name="Bot", value="🟢 Online", inline=True)
         embed.add_field(name="Latency", value=f"`{latency_ms} ms`", inline=True)
         embed.add_field(name="Uptime", value=f"{hours}h {minutes}m {seconds}s", inline=True)
-        embed.add_field(name="Channel", value=channel_status, inline=True)
+        embed.add_field(name="General Feed", value=channel_status, inline=True)
         embed.add_field(name="Blackboard", value=f"`{config.BLACKBOARD_URL}`", inline=True)
         embed.add_field(name="Session", value=session_status, inline=True)
         embed.add_field(name="Polling", value=f"Every `{config.SYNC_INTERVAL_MINUTES}` min", inline=True)
         embed.add_field(name="Timezone", value=f"`{config.TIMEZONE}`", inline=True)
+
+        routing_summary = (
+            f"• **Thesis 1:** <#{config.CHANNEL_THESIS_1}>\n"
+            f"• **Circuits Lab:** <#{config.CHANNEL_CIRCUITS_LAB}>\n"
+            f"• **Circuits Lecture:** <#{config.CHANNEL_CIRCUITS_LECTURE}>\n"
+            f"• **Feedback & Control:** <#{config.CHANNEL_FEEDBACK_CONTROL}>\n"
+            f"• **General Announcements:** <#{config.DISCORD_NOTIFICATION_CHANNEL_ID}>"
+        )
+        embed.add_field(name="📂 Category Channels", value=routing_summary, inline=False)
         await interaction.response.send_message(embed=embed)
 
     # ========================= /sync =========================
@@ -237,11 +262,47 @@ def register_commands(tree: app_commands.CommandTree, synchronizer, guild_obj: d
         await interaction.response.send_message(embed=embed)
 
     # ========================= /announcements =========================
-    @tree.command(name="announcements", description="View recent announcements.", guild=guild_obj)
-    @app_commands.describe(course="Filter by course (optional)")
+    @tree.command(name="announcements", description="View announcements (past 3 days or all).", guild=guild_obj)
+    @app_commands.describe(
+        scope="Choose 'recent' (past 3 days) or 'all' (all announcements)",
+        course="Filter by course (optional if inside course channel)",
+    )
+    @app_commands.choices(
+        scope=[
+            app_commands.Choice(name="📢 Recent (Past 3 Days) [Default]", value="recent"),
+            app_commands.Choice(name="📚 All Announcements", value="all"),
+        ]
+    )
     @app_commands.autocomplete(course=course_autocomplete)
-    async def announcements_command(interaction: discord.Interaction, course: Optional[str] = None):
-        items = await db_manager.get_recent_announcements(course_id=course, limit=10)
+    async def announcements_command(
+        interaction: discord.Interaction,
+        scope: Optional[app_commands.Choice[str]] = None,
+        course: Optional[str] = None,
+    ):
+        target_course = course or config.get_course_id_for_channel(interaction.channel_id)
+        scope_mode = scope.value if scope else "recent"
+        limit = 50 if scope_mode == "all" else 20
+        items = await db_manager.get_recent_announcements(course_id=target_course, limit=limit)
+
+        now = datetime.now()
+        three_days_ago_date = (now - timedelta(days=3)).date()
+
+        if scope_mode == "recent":
+            filtered = []
+            for a in items:
+                det_str = a.get("first_detected_at") or a.get("posted_date")
+                det_dt = parse_date(det_str)
+                if det_dt:
+                    if det_dt.date() >= three_days_ago_date:
+                        filtered.append(a)
+                else:
+                    filtered.append(a)
+            items = filtered
+            title = "📢 Recent Announcements (Past 3 Days)"
+            empty_msg = "No announcements in the past 3 days for this subject. Use `/announcements scope: All Announcements` to view previous posts."
+        else:
+            title = "📚 All Course Announcements"
+            empty_msg = "No announcements found for this subject."
 
         def build_field(a):
             preview = (a["content"] or "")[:200]
@@ -252,8 +313,8 @@ def register_commands(tree: app_commands.CommandTree, synchronizer, guild_obj: d
                 f"{preview or 'No content.'}\n*Detected: {a['first_detected_at']}*",
             )
 
-        embeds = _paginate_embed_fields(items, "📢 Recent Announcements", discord.Color.blue(), build_field,
-                                        empty_msg="No announcements found. Run `/sync` to fetch them.")
+        embeds = _paginate_embed_fields(items, title, discord.Color.blue(), build_field,
+                                        empty_msg=empty_msg)
         await interaction.response.send_message(embed=embeds[0])
         for e in embeds[1:]:
             await interaction.followup.send(embed=e)
@@ -263,7 +324,8 @@ def register_commands(tree: app_commands.CommandTree, synchronizer, guild_obj: d
     @app_commands.describe(course="Filter by course (optional)")
     @app_commands.autocomplete(course=course_autocomplete)
     async def activities_command(interaction: discord.Interaction, course: Optional[str] = None):
-        items = await db_manager.get_activities(course_id=course)
+        target_course = course or config.get_course_id_for_channel(interaction.channel_id)
+        items = await db_manager.get_activities(course_id=target_course)
 
         def build_field(a):
             return (
@@ -277,15 +339,62 @@ def register_commands(tree: app_commands.CommandTree, synchronizer, guild_obj: d
             )
 
         embeds = _paginate_embed_fields(items, "📝 All Activities & Assignments", discord.Color.purple(), build_field,
-                                        empty_msg="No activities found. Run `/sync` to fetch them.")
+                                        empty_msg="No activities found for this subject.")
         await interaction.response.send_message(embed=embeds[0])
         for e in embeds[1:]:
             await interaction.followup.send(embed=e)
 
     # ========================= /pending =========================
-    @tree.command(name="pending", description="Show activities that haven't been submitted yet.", guild=guild_obj)
-    async def pending_command(interaction: discord.Interaction):
+    @tree.command(name="pending", description="Show unsubmitted activities (nearest 3-day window or all).", guild=guild_obj)
+    @app_commands.describe(
+        scope="Choose 'nearest' (due within 3 days) or 'all' (all pending in course)",
+        course="Filter by course (optional if inside course channel)",
+    )
+    @app_commands.choices(
+        scope=[
+            app_commands.Choice(name="⏰ Nearest Due (Next 3 Days) [Default]", value="nearest"),
+            app_commands.Choice(name="📋 All Pending Coursework", value="all"),
+        ]
+    )
+    @app_commands.autocomplete(course=course_autocomplete)
+    async def pending_command(
+        interaction: discord.Interaction,
+        scope: Optional[app_commands.Choice[str]] = None,
+        course: Optional[str] = None,
+    ):
+        target_course = course or config.get_course_id_for_channel(interaction.channel_id)
         items = await db_manager.get_pending_activities()
+        if target_course:
+            items = [
+                a for a in items
+                if target_course.lower() in (a.get("course_id") or "").lower()
+                or (target_course.lower() in (a.get("course_name") or "").lower())
+            ]
+
+        scope_mode = scope.value if scope else "nearest"
+        now = datetime.now()
+        start_date = (now - timedelta(days=3)).date()
+        end_date = (now + timedelta(days=3)).date()
+
+        if scope_mode == "nearest":
+            filtered_items = []
+            for a in items:
+                dd = a.get("due_date")
+                if not dd or dd.lower() == "ongoing":
+                    continue
+                due_dt = parse_date(dd)
+                if due_dt:
+                    # Due within next 3 days, or overdue up to 3 days ago (by calendar date)
+                    if start_date <= due_dt.date() <= end_date:
+                        a["_due_dt"] = due_dt
+                        filtered_items.append(a)
+            filtered_items.sort(key=lambda x: x.get("_due_dt", datetime.max))
+            items = filtered_items
+            title = "⏰ Pending Activities (Due in Next 3 Days)"
+            empty_msg = "🎉 No pending activities due in the next 3 days for this subject! Use `/pending scope: All Pending Coursework` to view all."
+        else:
+            title = "📋 All Pending Activities (Unsubmitted)"
+            empty_msg = "🎉 Nothing pending for this subject — you're all caught up!"
 
         def build_field(a):
             return (
@@ -297,8 +406,8 @@ def register_commands(tree: app_commands.CommandTree, synchronizer, guild_obj: d
                 ),
             )
 
-        embeds = _paginate_embed_fields(items, "⚠️ Pending Activities (Not Submitted)", discord.Color.red(), build_field,
-                                        empty_msg="🎉 Nothing pending — you're all caught up!")
+        embeds = _paginate_embed_fields(items, title, discord.Color.red(), build_field,
+                                        empty_msg=empty_msg)
         await interaction.response.send_message(embed=embeds[0])
         for e in embeds[1:]:
             await interaction.followup.send(embed=e)
@@ -306,7 +415,8 @@ def register_commands(tree: app_commands.CommandTree, synchronizer, guild_obj: d
     # ========================= /deadlines =========================
     @tree.command(name="deadlines", description="View all deadlines chronologically.", guild=guild_obj)
     async def deadlines_command(interaction: discord.Interaction):
-        items = await db_manager.get_activities()
+        target_course = config.get_course_id_for_channel(interaction.channel_id)
+        items = await db_manager.get_activities(course_id=target_course)
         dated = [a for a in items if a["due_date"] and a["due_date"].lower() != "ongoing"]
 
         def build_field(a):
@@ -316,7 +426,7 @@ def register_commands(tree: app_commands.CommandTree, synchronizer, guild_obj: d
             )
 
         embeds = _paginate_embed_fields(dated, "📅 All Deadlines (Chronological)", discord.Color.orange(), build_field,
-                                        empty_msg="No dated deadlines found.")
+                                        empty_msg="No dated deadlines found for this subject.")
         await interaction.response.send_message(embed=embeds[0])
         for e in embeds[1:]:
             await interaction.followup.send(embed=e)
@@ -324,9 +434,10 @@ def register_commands(tree: app_commands.CommandTree, synchronizer, guild_obj: d
     # ========================= /upcoming =========================
     @tree.command(name="upcoming", description="Assignments due within the next 7 days.", guild=guild_obj)
     async def upcoming_command(interaction: discord.Interaction):
-        items = await db_manager.get_activities()
+        target_course = config.get_course_id_for_channel(interaction.channel_id)
+        items = await db_manager.get_activities(course_id=target_course)
         now = datetime.now()
-        week_from_now = now + timedelta(days=7)
+        end_date = (now + timedelta(days=7)).date()
 
         upcoming = []
         for a in items:
@@ -334,7 +445,7 @@ def register_commands(tree: app_commands.CommandTree, synchronizer, guild_obj: d
             if not dd or dd.lower() == "ongoing":
                 continue
             due_dt = parse_date(dd)
-            if due_dt and now <= due_dt <= week_from_now:
+            if due_dt and now.date() <= due_dt.date() <= end_date:
                 a["_due_dt"] = due_dt
                 upcoming.append(a)
 
@@ -365,7 +476,7 @@ def register_commands(tree: app_commands.CommandTree, synchronizer, guild_obj: d
             )
 
         embeds = _paginate_embed_fields(upcoming, "📆 Upcoming (Next 7 Days)", discord.Color.gold(), build_field,
-                                        empty_msg="🎉 Nothing due in the next 7 days!")
+                                        empty_msg="🎉 Nothing due in the next 7 days for this subject!")
         await interaction.response.send_message(embed=embeds[0])
         for e in embeds[1:]:
             await interaction.followup.send(embed=e)
