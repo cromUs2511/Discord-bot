@@ -38,9 +38,9 @@ def _env_str(name: str, default: str = "") -> str:
 # Discord
 # ------------------------------------------------------------------
 DISCORD_BOT_TOKEN: str = _env_str("DISCORD_BOT_TOKEN")
-DISCORD_GUILD_ID: int = _env_int("DISCORD_GUILD_ID", 0)
+DISCORD_GUILD_ID: int = _env_int("DISCORD_GUILD_ID", 1567109195390783548)
 DISCORD_NOTIFICATION_CHANNEL_ID: int = _env_int(
-    "DISCORD_NOTIFICATION_CHANNEL_ID", 0
+    "DISCORD_NOTIFICATION_CHANNEL_ID", 1568127562637377646
 )
 
 # Notifications are mentioned with this string (e.g. "@everyone", "@here").
@@ -48,10 +48,10 @@ DISCORD_NOTIFICATION_CHANNEL_ID: int = _env_int(
 NOTIFICATION_PING: str = _env_str("NOTIFICATION_PING", "@everyone")
 
 # Specific course dedicated channels. Set these in .env for your server.
-CHANNEL_THESIS_1: int = _env_int("CHANNEL_THESIS_1", 0)
-CHANNEL_CIRCUITS_LAB: int = _env_int("CHANNEL_CIRCUITS_LAB", 0)
-CHANNEL_CIRCUITS_LECTURE: int = _env_int("CHANNEL_CIRCUITS_LECTURE", 0)
-CHANNEL_FEEDBACK_CONTROL: int = _env_int("CHANNEL_FEEDBACK_CONTROL", 0)
+CHANNEL_THESIS_1: int = _env_int("CHANNEL_THESIS_1", 1567109364664238150)
+CHANNEL_CIRCUITS_LAB: int = _env_int("CHANNEL_CIRCUITS_LAB", 1567109422767939604)
+CHANNEL_CIRCUITS_LECTURE: int = _env_int("CHANNEL_CIRCUITS_LECTURE", 1567109447971774494)
+CHANNEL_FEEDBACK_CONTROL: int = _env_int("CHANNEL_FEEDBACK_CONTROL", 1567109482054549544)
 
 
 def get_course_channel_scope(channel_id: int | None) -> dict | None:
@@ -111,7 +111,7 @@ def get_course_id_for_channel(channel_id: int) -> str | None:
 # ------------------------------------------------------------------
 # Blackboard
 # ------------------------------------------------------------------
-BLACKBOARD_URL: str = _env_str("BLACKBOARD_URL").rstrip("/")
+BLACKBOARD_URL: str = _env_str("BLACKBOARD_URL", "https://mapua.blackboard.com").rstrip("/")
 
 # Automated login credentials (optional — enables 100% automated background login)
 BLACKBOARD_USERNAME: str = _env_str("BLACKBOARD_USERNAME")
