@@ -1,0 +1,52 @@
+# ===== Python =====
+__pycache__/
+*.py[cod]
+*$py.class
+*.egg-info/
+dist/
+build/
+*.egg
+
+# ===== Virtual Environment =====
+venv/
+.venv/
+env/
+
+# ===== Environment & Secrets =====
+.env
+*.pem
+*.key
+
+# ===== Browser Authentication State =====
+# CRITICAL: Never commit browser state — it contains session cookies
+data/auth_state/
+data/*.json
+
+# ===== Database =====
+data/*.db
+data/*.sqlite
+data/*.sqlite3
+
+# ===== IDE =====
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+
+# ===== OS =====
+.DS_Store
+Thumbs.db
+desktop.ini
+
+# ===== Logs =====
+*.log
+logs/
+
+# ===== Playwright =====
+# Browser binaries are large — install them via `playwright install` instead
+# of committing them to the repo.
+
+# ===== Misc =====
+*.bak
+*.tmp
