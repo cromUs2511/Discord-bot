@@ -113,6 +113,13 @@ def get_course_id_for_channel(channel_id: int) -> str | None:
 # ------------------------------------------------------------------
 BLACKBOARD_URL: str = _env_str("BLACKBOARD_URL").rstrip("/")
 
+# Automated login credentials (optional — enables 100% automated background login)
+BLACKBOARD_USERNAME: str = _env_str("BLACKBOARD_USERNAME")
+BLACKBOARD_PASSWORD: str = _env_str("BLACKBOARD_PASSWORD")
+
+# Raw session JSON data (for cloud platforms like Railway where files aren't uploaded)
+BLACKBOARD_SESSION_DATA: str = _env_str("BLACKBOARD_SESSION_DATA")
+
 # Optional: only monitor courses from this term (e.g. "2Q2627").
 # Leave empty to auto-detect every term found on the course dashboard.
 ACADEMIC_TERM: str = _env_str("ACADEMIC_TERM")

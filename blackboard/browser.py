@@ -22,6 +22,22 @@ logger = logging.getLogger("blackboard.browser")
 SESSION_STORAGE_PATH = config.AUTH_STATE_DIR / "session.json"
 
 
+def ensure_session_file() -> bool:
+    """
+    Restores session.json from the BLACKBOARD_SESSION_DATA environment variable
+    if the file does not already exist on disk (ideal for cloud platforms).
+    """
+    if not SESSION_STORAGE_PATH.exists() and config.BLACKBOARD_SESSION_DATA:
+        try:
+            SESSION_STORAGE_PATH.parent.mkdir(parents=True, exist_ok=True)
+            SESSION_STORAGE_PATH.write_text(config.BLACKBOARD_SESSION_DATA.strip(), encoding="utf-8")
+            logger.info("Restored session.json from BLACKBOARD_SESSION_DATA environment variable.")
+            return True
+        except Exception as e:
+            logger.error("Failed to restore session from BLACKBOARD_SESSION_DATA: %s", e)
+    return SESSION_STORAGE_PATH.exists()
+
+
 @asynccontextmanager
 async def get_browser_context(
     headless: bool = True,
@@ -33,6 +49,7 @@ async def get_browser_context(
     If `use_saved_state` is True and `session.json` exists, the context
     is initialized with pre-existing session cookies and local storage.
     """
+    ensure_session_file()
     browser_args = [
         "--disable-blink-features=AutomationControlled",
         "--no-sandbox",

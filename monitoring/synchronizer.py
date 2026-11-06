@@ -70,11 +70,20 @@ class BlackboardSynchronizer:
         todo_ids_by_course: dict[str, set[str]] = {}
 
         try:
+            from blackboard.browser import ensure_session_file
+            from blackboard.authentication import login_automated
+            ensure_session_file()
+
+            if not SESSION_STORAGE_PATH.exists():
+                if config.BLACKBOARD_USERNAME and config.BLACKBOARD_PASSWORD:
+                    logger.info("Session file missing; attempting automated login...")
+                    await login_automated()
+
             if not SESSION_STORAGE_PATH.exists():
                 summary["status"] = "error"
                 summary["message"] = (
-                    "No saved Blackboard session found. Run "
-                    "`python -m blackboard.authentication login` first."
+                    "No saved Blackboard session found. Set BLACKBOARD_USERNAME & "
+                    "BLACKBOARD_PASSWORD in .env for automated login, or provide BLACKBOARD_SESSION_DATA."
                 )
                 self.session_valid = False
                 return summary

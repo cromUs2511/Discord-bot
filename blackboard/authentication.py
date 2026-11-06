@@ -99,12 +99,66 @@ async def login_interactive() -> bool:
         return True
 
 
+async def login_automated() -> bool:
+    """
+    Attempts headless automated login using BLACKBOARD_USERNAME and BLACKBOARD_PASSWORD.
+    Automatically enters credentials into the login form and saves session state.
+    """
+    username = config.BLACKBOARD_USERNAME
+    password = config.BLACKBOARD_PASSWORD
+    if not username or not password:
+        logger.info("Automated login skipped: BLACKBOARD_USERNAME and/or BLACKBOARD_PASSWORD not set in .env.")
+        return False
+
+    logger.info("Attempting automated headless login for: %s...", username)
+
+    async with get_browser_context(headless=True, use_saved_state=False) as (_, _, context):
+        page = await context.new_page()
+
+        try:
+            await page.goto(config.BLACKBOARD_URL, wait_until="domcontentloaded", timeout=45000)
+            await asyncio.sleep(2)
+
+            # Check for standard Blackboard Ultra login inputs
+            if await page.locator("#user_id").count() > 0:
+                logger.info("Filling in login credentials...")
+                await page.fill("#user_id", username)
+                await page.fill("#password", password)
+                await page.click("#entry-login")
+
+                # Wait up to 30 seconds for redirect into Blackboard Ultra
+                for _ in range(15):
+                    await asyncio.sleep(2)
+                    if await is_authenticated_url(page.url):
+                        break
+
+            if await is_authenticated_url(page.url):
+                SESSION_STORAGE_PATH.parent.mkdir(parents=True, exist_ok=True)
+                await context.storage_state(path=str(SESSION_STORAGE_PATH))
+                logger.info("✅ Automated login succeeded! Session saved to: %s", SESSION_STORAGE_PATH)
+                return True
+            else:
+                logger.warning("Automated login did not reach Ultra dashboard. Current URL: %s", page.url)
+                return False
+
+        except Exception as e:
+            logger.error("Automated login error: %s", e)
+            return False
+
+
 async def verify_session() -> bool:
     """
     Headlessly tests if the stored session.json is still valid and can access Blackboard.
-    Returns True if valid, False if expired or missing.
+    If session is missing or expired, attempts automated login if credentials are set.
     """
+    from blackboard.browser import ensure_session_file
+    ensure_session_file()
+
     if not SESSION_STORAGE_PATH.exists():
+        if config.BLACKBOARD_USERNAME and config.BLACKBOARD_PASSWORD:
+            logger.info("Session missing; attempting automated login with configured credentials...")
+            if await login_automated():
+                return True
         logger.warning("No session file found at: %s", SESSION_STORAGE_PATH)
         return False
 
@@ -113,12 +167,11 @@ async def verify_session() -> bool:
     async with get_browser_context(headless=True, use_saved_state=True) as (_, _, context):
         page = await context.new_page()
 
-        # Target the courses page directly or ultra root
         test_url = f"{config.BLACKBOARD_URL.rstrip('/')}/ultra/course"
 
         try:
             await page.goto(test_url, wait_until="domcontentloaded", timeout=30000)
-            await asyncio.sleep(3)  # Wait for single-page app (SPA) router to redirect if expired
+            await asyncio.sleep(3)
         except Exception as e:
             logger.error("Failed to navigate during session verification: %s", e)
             return False
@@ -130,6 +183,11 @@ async def verify_session() -> bool:
             logger.info("✅ Stored session is valid!")
             return True
         else:
+            # Session expired — try automated login if credentials are configured
+            if config.BLACKBOARD_USERNAME and config.BLACKBOARD_PASSWORD:
+                logger.info("Session expired; attempting automated re-login...")
+                if await login_automated():
+                    return True
             logger.warning("❌ Session has expired or redirected to login: %s", final_url)
             return False
 
