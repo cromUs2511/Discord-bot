@@ -29,6 +29,16 @@ logger = logging.getLogger("main")
 async def main() -> None:
     logger.info("=" * 60)
     logger.info("Starting Blackboard Discord Academic Assistant...")
+    logger.info("Configuration loaded:")
+    logger.info("  • BLACKBOARD_URL: %s", config.BLACKBOARD_URL)
+    logger.info("  • BLACKBOARD_USERNAME: %s", config.BLACKBOARD_USERNAME)
+    logger.info("  • BLACKBOARD_PASSWORD: %s", "CONFIGURED" if config.BLACKBOARD_PASSWORD else "MISSING")
+    logger.info("  • NOTIFICATION_PING: %s", config.NOTIFICATION_PING)
+    logger.info("  • GENERAL_CHANNEL: %s", config.DISCORD_NOTIFICATION_CHANNEL_ID)
+    logger.info("  • THESIS_1: %s", config.CHANNEL_THESIS_1)
+    logger.info("  • CIRCUITS_LAB: %s", config.CHANNEL_CIRCUITS_LAB)
+    logger.info("  • CIRCUITS_LECTURE: %s", config.CHANNEL_CIRCUITS_LECTURE)
+    logger.info("  • FEEDBACK_CONTROL: %s", config.CHANNEL_FEEDBACK_CONTROL)
     logger.info("=" * 60)
 
     if not config.DISCORD_BOT_TOKEN:
