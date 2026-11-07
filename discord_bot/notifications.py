@@ -14,6 +14,10 @@ from database.db import db_manager
 from discord_bot.embeds import create_announcement_embed, create_activity_embed
 from blackboard.announcements import Announcement
 from blackboard.activities import Activity
+from utils.dates import (
+    is_announcement_from_yesterday_or_today,
+    is_activity_worthy_of_notification,
+)
 
 logger = logging.getLogger("discord.notifications")
 
@@ -35,7 +39,22 @@ async def send_announcement_notification(client: discord.Client, announcement: A
     """
     Sends an announcement STRICTLY to its respective course channel only with mention/ping.
     Guarantees zero duplicate notifications via notification_history deduplication.
+    Only announces items posted yesterday, today, or newer (ignores old historical posts).
     """
+    # Filter: If new announcement is older than yesterday, silently skip and record
+    if not is_update and not is_announcement_from_yesterday_or_today(announcement.posted_date, announcement.content):
+        logger.info(
+            "Skipping old announcement notification for [%s] (posted %s): %s",
+            announcement.id,
+            announcement.posted_date,
+            announcement.title,
+        )
+        try:
+            await db_manager.record_notification("announcement", announcement.id, announcement.fingerprint)
+        except Exception:
+            pass
+        return
+
     # Deduplicate: if this announcement with this exact fingerprint was already sent, skip
     if await db_manager.has_notification_been_sent("announcement", announcement.id, announcement.fingerprint):
         logger.info(
@@ -80,6 +99,22 @@ async def send_activity_notification(
     Guarantees zero duplicate notifications via notification_history deduplication.
     """
     item_type = "deadline_change" if event_type == "deadline_changed" else "activity"
+
+    # Filter: If new activity has past-due deadline older than yesterday or is already submitted, skip
+    if event_type == "new" and not is_activity_worthy_of_notification(activity.due_date, activity.status):
+        logger.info(
+            "Skipping expired/submitted activity notification for [%s] (Due: %s, Status: %s): %s",
+            activity.id,
+            activity.due_date,
+            activity.status,
+            activity.title,
+        )
+        try:
+            await db_manager.record_notification(item_type, activity.id, activity.fingerprint)
+        except Exception:
+            pass
+        return
+
     if await db_manager.has_notification_been_sent(item_type, activity.id, activity.fingerprint):
         logger.info(
             "Skipping duplicate %s notification for [%s]: %s",

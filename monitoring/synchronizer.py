@@ -19,6 +19,10 @@ from discord_bot.notifications import (
     send_announcement_notification,
     send_activity_notification,
 )
+from utils.dates import (
+    is_announcement_from_yesterday_or_today,
+    is_activity_worthy_of_notification,
+)
 
 logger = logging.getLogger("monitoring.synchronizer")
 
@@ -162,9 +166,12 @@ class BlackboardSynchronizer:
                         if change_type == "new":
                             summary["new_activities"] += 1
                             if notify and self.client:
-                                await send_activity_notification(
-                                    self.client, act, event_type="new"
-                                )
+                                if is_activity_worthy_of_notification(act.due_date, act.status):
+                                    await send_activity_notification(
+                                        self.client, act, event_type="new"
+                                    )
+                                else:
+                                    await db_manager.record_notification("activity", act.id, act.fingerprint)
                         elif change_type == "deadline_changed":
                             summary["deadline_changes"] += 1
                             if notify and self.client:
@@ -210,9 +217,12 @@ class BlackboardSynchronizer:
                             if change_type == "new":
                                 summary["new_announcements"] += 1
                                 if notify and self.client:
-                                    await send_announcement_notification(
-                                        self.client, ann, is_update=False
-                                    )
+                                    if is_announcement_from_yesterday_or_today(ann.posted_date, ann.content):
+                                        await send_announcement_notification(
+                                            self.client, ann, is_update=False
+                                        )
+                                    else:
+                                        await db_manager.record_notification("announcement", ann.id, ann.fingerprint)
                             elif change_type == "updated":
                                 summary["updated_announcements"] += 1
                                 if notify and self.client:
@@ -253,9 +263,12 @@ class BlackboardSynchronizer:
                             if change_type == "new":
                                 summary["new_activities"] += 1
                                 if notify and self.client:
-                                    await send_activity_notification(
-                                        self.client, act, event_type="new"
-                                    )
+                                    if is_activity_worthy_of_notification(act.due_date, act.status):
+                                        await send_activity_notification(
+                                            self.client, act, event_type="new"
+                                        )
+                                    else:
+                                        await db_manager.record_notification("activity", act.id, act.fingerprint)
                             elif change_type == "deadline_changed":
                                 summary["deadline_changes"] += 1
                                 if notify and self.client:
