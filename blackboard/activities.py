@@ -13,7 +13,12 @@ import re
 from dataclasses import dataclass
 from typing import Any, Dict, List, Optional
 
-from utils.dates import convert_utc_due_to_local, parse_due_datetime
+import config
+from utils.dates import (
+    convert_utc_due_to_local,
+    parse_due_datetime,
+    should_convert_scraped_times,
+)
 
 logger = logging.getLogger("blackboard.activities")
 
@@ -45,6 +50,52 @@ _DATE_RE = re.compile(
 )
 _POINTS_RE = re.compile(r"^\d+(?:\.\d+)?\s*/\s*\d+(?:\.\d+)?$")
 _TITLE_SUFFIX_RE = re.compile(r"\s+(?:submission|assignment)$", re.IGNORECASE)
+
+
+async def _browser_offset_minutes(page) -> Optional[int]:
+    """
+    Measure the browser's actual UTC offset (JS getTimezoneOffset).
+
+    Returns None when it cannot be measured (e.g. fake pages in tests) so
+    callers fall back to the configured default behaviour.
+    """
+    try:
+        result = await page.evaluate(
+            "() => ({ offset: new Date().getTimezoneOffset(), "
+            "tz: Intl.DateTimeFormat().resolvedOptions().timeZone })"
+        )
+    except Exception:
+        return None
+    if isinstance(result, dict):
+        try:
+            return int(result.get("offset"))
+        except (TypeError, ValueError):
+            return None
+    if isinstance(result, (int, float)):
+        return int(result)
+    return None
+
+
+async def _scraped_should_convert(page) -> bool:
+    """
+    Decide (once per scrape) whether scraped wall-times need UTC->Manila.
+
+    In 'auto' mode this prevents double-conversion on Singapore/SGT
+    (browser already at UTC+8, offset -480) while still fixing US/UTC
+    browsers (offset 0). Forced 'utc'/'local' modes bypass measurement.
+    """
+    mode = config.scraped_times_mode() if hasattr(config, "scraped_times_mode") else "auto"
+    if mode == "utc":
+        return True
+    if mode == "local":
+        return False
+    offset = await _browser_offset_minutes(page)
+    decision = should_convert_scraped_times(offset)
+    logger.info(
+        "Scraped-times check: mode=%s browser_offset=%s -> convert=%s",
+        mode, offset, decision,
+    )
+    return decision
 
 
 def canonical_title(title: str) -> str:
@@ -150,6 +201,7 @@ async def extract_todo_activities(page, courses: list) -> List[Activity]:
     panel on the Blackboard Courses page (/ultra/course).
     """
     activities: List[Activity] = []
+    should_convert = await _scraped_should_convert(page)
 
     raw_items = await page.evaluate(
         r"""() => {
@@ -241,11 +293,11 @@ async def extract_todo_activities(page, courses: list) -> List[Activity]:
                 elif date_parts:
                     due_date_str = " ".join(date_parts)
 
-        # Blackboard on this deployment renders due times in UTC even when
-        # the browser requests Asia/Manila, so shift scraped datetimes to
-        # local time here (date-only and "Ongoing" pass through untouched).
+        # Shift UTC-scraped datetimes to local only when the browser is
+        # not already rendering local time (see _scraped_should_convert).
+        # Date-only and "Ongoing" pass through untouched.
         if due_date_str:
-            due_date_str = convert_utc_due_to_local(due_date_str)
+            due_date_str = convert_utc_due_to_local(due_date_str, force=should_convert)
 
         activities.append(
             Activity(
@@ -272,6 +324,7 @@ async def extract_course_activities(
     Assumes `page` is currently loaded on the course outline page.
     """
     activities: List[Activity] = []
+    should_convert = await _scraped_should_convert(page)
 
     # Click the Gradebook tab
     grade_tab = page.locator(
@@ -362,11 +415,9 @@ async def extract_course_activities(
                     found_status = "Not submitted"
             status = found_status or "Not submitted"
 
-        # See To Do extractor: gradebook wall-times also arrive in UTC on
-        # this deployment and must be shifted to Asia/Manila (date-only
-        # values pass through unchanged).
+        # See To Do extractor: shift only when browser is not already local.
         if due_date:
-            due_date = convert_utc_due_to_local(due_date)
+            due_date = convert_utc_due_to_local(due_date, force=should_convert)
 
         activities.append(
             Activity(

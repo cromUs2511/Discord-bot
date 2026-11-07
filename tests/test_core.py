@@ -26,7 +26,12 @@ from database.db import DatabaseManager, is_completed_status, is_genuine_deadlin
 import config
 import monitoring.synchronizer as synchronizer_module
 from monitoring.synchronizer import BlackboardSynchronizer
-from utils.dates import convert_utc_due_to_local, is_date_only, parse_db_timestamp
+from utils.dates import (
+    convert_utc_due_to_local,
+    is_date_only,
+    parse_db_timestamp,
+    should_convert_scraped_times,
+)
 
 
 class _FakeLocator:
@@ -49,6 +54,12 @@ class _FakePage:
         return _FakeLocator()
 
     async def evaluate(self, script):
+        # Timezone probe (offset measurement) — default to UTC (0) so the
+        # extractor performs the UTC->Manila shift, matching the US-region
+        # scenario. Tests for the Singapore scenario pass browser_offset.
+        if "getTimezoneOffset" in script or "resolvedOptions" in script:
+            offset = getattr(self, "browser_offset", 0)
+            return {"offset": offset, "tz": "UTC" if offset == 0 else "Asia/Manila"}
         return self.payload
 
 
@@ -374,6 +385,27 @@ class ExtractorTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(len(activities), 1)
         self.assertEqual(activities[0].due_date, "11/9/26")
 
+    async def test_todo_singapore_no_double_conversion(self):
+        """Singapore/SGT browser already renders local; auto must not shift."""
+        course = Course(
+            id="CPE121-4_C1_2Q2627",
+            name="FEEDBACK AND CONTROL SYSTEMS",
+            internal_id="_170077_1",
+        )
+        page = _FakePage(
+            [
+                "Nov\n8\nCoursework 1.1\n"
+                "Assignment · CPE121-4_C1_2Q2627\n"
+                "Sun · 11/8/26 · 11:59 PM"
+            ]
+        )
+        page.browser_offset = -480  # Singapore/Manila SGT
+        with patch.object(config, "BLACKBOARD_SCRAPED_TIMES_UTC", "auto"):
+            activities = await extract_todo_activities(page, [course])
+        self.assertEqual(len(activities), 1)
+        # Must stay 11:59 PM — NOT 11/9/26 7:59 AM (double-conversion).
+        self.assertEqual(activities[0].due_date, "11/8/26 11:59 PM")
+
     async def test_announcement_metadata_is_preserved(self):
         page = _FakePage(
             [
@@ -555,7 +587,7 @@ class DateUtilityTests(unittest.TestCase):
 
     def test_utc_due_is_converted_to_manila(self):
         with patch.object(config, "TIMEZONE", "Asia/Manila"), patch.object(
-            config, "BLACKBOARD_SCRAPED_TIMES_UTC", True
+            config, "BLACKBOARD_SCRAPED_TIMES_UTC", "true"
         ):
             # The screenshot case: Manila 11:59 PM scraped as UTC 3:59 PM.
             self.assertEqual(
@@ -571,9 +603,24 @@ class DateUtilityTests(unittest.TestCase):
             self.assertIsNone(convert_utc_due_to_local(None))
 
     def test_utc_conversion_disabled_flag_passes_through(self):
-        with patch.object(config, "BLACKBOARD_SCRAPED_TIMES_UTC", False):
+        with patch.object(config, "BLACKBOARD_SCRAPED_TIMES_UTC", "false"):
             self.assertEqual(
                 convert_utc_due_to_local("11/9/26 3:59 PM"), "11/9/26 3:59 PM"
+            )
+
+    def test_auto_detects_browser_offset(self):
+        """Singapore/SGT (offset -480) must NOT be double-converted."""
+        with patch.object(config, "TIMEZONE", "Asia/Manila"), patch.object(
+            config, "BLACKBOARD_SCRAPED_TIMES_UTC", "auto"
+        ):
+            # US/UTC browser (offset 0) -> convert (3:59 PM -> 11:59 PM).
+            self.assertTrue(should_convert_scraped_times(0))
+            # Singapore/Manila browser (offset -480) -> do not convert.
+            self.assertFalse(should_convert_scraped_times(-480))
+            # The '7:59 AM next-day' double-conversion case stays untouched.
+            self.assertEqual(
+                convert_utc_due_to_local("11/9/26 7:59 AM", force=False),
+                "11/9/26 7:59 AM",
             )
 
 

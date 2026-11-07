@@ -132,15 +132,25 @@ BLACKBOARD_SESSION_DATA: str = _env_str("BLACKBOARD_SESSION_DATA")
 # Leave empty to auto-detect every term found on the course dashboard.
 ACADEMIC_TERM: str = _env_str("ACADEMIC_TERM")
 
-# Blackboard on Railway renders/processes due times in UTC even though the
-# Playwright context requests Asia/Manila (the account/course timezone is
-# server-side). Scraped wall-clock times therefore arrive as UTC —
-# e.g. a Manila 11:59 PM deadline shows as 3:59 PM — and must be shifted
-# +8h to Asia/Manila before storage/display. Set to "false" ONLY if you
-# ever observe 11:59 PM scraped correctly as 11:59 PM.
-BLACKBOARD_SCRAPED_TIMES_UTC: bool = _env_str(
-    "BLACKBOARD_SCRAPED_TIMES_UTC", "true"
-).lower() in ("true", "1", "yes", "on")
+# Whether Blackboard scrapes arrive in UTC or already in local time depends on
+# the Railway region / browser timezone: US regions rendered UTC (Manila
+# 11:59 PM appeared as 3:59 PM), Singapore (SGT, UTC+8) renders local
+# correctly. "auto" (default) measures the browser's actual offset at scrape
+# time and only shifts when the browser is NOT already in local time.
+# Forced values: "true"/"utc" = always shift +8h, "false"/"local" = never.
+BLACKBOARD_SCRAPED_TIMES_UTC: str = _env_str(
+    "BLACKBOARD_SCRAPED_TIMES_UTC", "auto"
+).lower()
+
+
+def scraped_times_mode() -> str:
+    """Return 'auto' | 'utc' | 'local' for Blackboard due-date handling."""
+    raw = (BLACKBOARD_SCRAPED_TIMES_UTC or "auto").strip().lower()
+    if raw in ("true", "1", "yes", "on", "utc"):
+        return "utc"
+    if raw in ("false", "0", "no", "off", "local"):
+        return "local"
+    return "auto"
 
 # ------------------------------------------------------------------
 # Scheduling

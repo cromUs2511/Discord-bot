@@ -93,24 +93,70 @@ def _format_due_local(dt: datetime) -> str:
     return f"{dt.month}/{dt.day}/{dt.year % 100:02d} {hour12}:{dt.minute:02d} {ampm}"
 
 
-def convert_utc_due_to_local(value: Optional[str]) -> Optional[str]:
+def scraped_times_mode() -> str:
+    """Return 'auto' | 'utc' | 'local' (delegates to config helper)."""
+    try:
+        return config.scraped_times_mode()
+    except Exception:
+        return "auto"
+
+
+def should_convert_scraped_times(browser_offset_minutes: Optional[int] = None) -> bool:
+    """
+    Decide whether a scraped wall-time must be shifted UTC -> local.
+
+    Modes:
+      'utc'   -> always convert (old behaviour).
+      'local' -> never convert (browser already renders local time).
+      'auto'  -> convert only when the browser's measured offset differs
+                 from the desired local offset (e.g. browser in UTC 0 vs
+                 Manila -480 -> convert; browser already in Singapore/Manila
+                 -480 -> do NOT double-convert). When no offset is
+                 available (e.g. DB migration, tests with fake pages),
+                 default to converting to preserve the UTC->Manila fix.
+
+    ``browser_offset_minutes`` is JS ``new Date().getTimezoneOffset()``:
+    minutes to ADD to local to get UTC (Manila/Singapore = -480, UTC = 0).
+    """
+    mode = scraped_times_mode()
+    if mode == "utc":
+        return True
+    if mode == "local":
+        return False
+    # auto
+    if browser_offset_minutes is None:
+        return True
+    try:
+        tz = local_timezone()
+        offset = datetime.now(tz).utcoffset()
+        # Desired minutes-to-add-to-local-to-get-UTC (e.g. Manila: -480).
+        desired = -offset.total_seconds() // 60 if offset else 0
+        return int(browser_offset_minutes) != int(desired)
+    except Exception:
+        return True
+
+
+def convert_utc_due_to_local(
+    value: Optional[str], force: Optional[bool] = None
+) -> Optional[str]:
     """
     Convert a UTC due-date string (as scraped from Blackboard on Railway)
     into the configured local timezone (Asia/Manila, UTC+8).
 
     Why this exists: Blackboard Ultra serves due times relative to the
-    account/course server timezone, which on this deployment is UTC,
-    regardless of the Playwright browser's ``timezone_id``. A Manila
-    deadline of 11:59 PM therefore arrives as "3:59 PM" UTC, an 8-hour
-    mis-sync. Shifting every datetime scraped from Blackboard by +8h
-    (with date-rollover, e.g. 6:00 PM UTC -> 2:00 AM next day Manila)
-    restores the correct deadline.
+    account/course server timezone, which was UTC on US Railway regions
+    even though the Playwright browser requested Asia/Manila. A Manila
+    deadline of 11:59 PM therefore arrived as "3:59 PM" UTC. Shifting
+    UTC datetimes by +8h (with date-rollover) restores the correct local
+    deadline. On Singapore (SGT, UTC+8) the browser already renders
+    local time, so callers in 'auto' mode pass ``force=False`` to
+    avoid double-converting 11:59 PM -> 7:59 AM next day.
 
     Passthrough rules:
       - None / empty / "Ongoing" / date-only strings are returned unchanged
         (date-only deadlines have no time to shift).
-      - If ``BLACKBOARD_SCRAPED_TIMES_UTC`` is false, values are returned
-        unchanged (for deployments where Blackboard already renders local).
+      - If ``force`` is False, or (when ``force`` is None) the configured
+        mode is 'local', values are returned unchanged.
       - Unparseable values are returned unchanged (never replace a deadline
         with something worse).
     """
@@ -119,7 +165,10 @@ def convert_utc_due_to_local(value: Optional[str]) -> Optional[str]:
     cleaned = " ".join(str(value).split())
     if not cleaned or cleaned.lower() in {"ongoing", "no deadline", "none"}:
         return value
-    if not getattr(config, "BLACKBOARD_SCRAPED_TIMES_UTC", True):
+    if force is not None:
+        if not force:
+            return value
+    elif not should_convert_scraped_times(None):
         return value
     if is_date_only(cleaned):
         return value
