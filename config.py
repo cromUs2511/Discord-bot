@@ -132,6 +132,16 @@ BLACKBOARD_SESSION_DATA: str = _env_str("BLACKBOARD_SESSION_DATA")
 # Leave empty to auto-detect every term found on the course dashboard.
 ACADEMIC_TERM: str = _env_str("ACADEMIC_TERM")
 
+# Blackboard on Railway renders/processes due times in UTC even though the
+# Playwright context requests Asia/Manila (the account/course timezone is
+# server-side). Scraped wall-clock times therefore arrive as UTC —
+# e.g. a Manila 11:59 PM deadline shows as 3:59 PM — and must be shifted
+# +8h to Asia/Manila before storage/display. Set to "false" ONLY if you
+# ever observe 11:59 PM scraped correctly as 11:59 PM.
+BLACKBOARD_SCRAPED_TIMES_UTC: bool = _env_str(
+    "BLACKBOARD_SCRAPED_TIMES_UTC", "true"
+).lower() in ("true", "1", "yes", "on")
+
 # ------------------------------------------------------------------
 # Scheduling
 # ------------------------------------------------------------------

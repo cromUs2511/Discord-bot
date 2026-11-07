@@ -26,7 +26,7 @@ from database.db import DatabaseManager, is_completed_status, is_genuine_deadlin
 import config
 import monitoring.synchronizer as synchronizer_module
 from monitoring.synchronizer import BlackboardSynchronizer
-from utils.dates import is_date_only, parse_db_timestamp
+from utils.dates import convert_utc_due_to_local, is_date_only, parse_db_timestamp
 
 
 class _FakeLocator:
@@ -282,6 +282,51 @@ class DatabaseTests(unittest.IsolatedAsyncioTestCase):
         finally:
             os.remove(path)
 
+    async def test_utc_migration_converts_once_and_updates_fingerprint(self):
+        handle, path = tempfile.mkstemp(suffix=".db")
+        os.close(handle)
+        try:
+            from blackboard.activities import activity_fingerprint
+
+            old_fp = activity_fingerprint(self.course.id, "Legacy", "11/9/26 3:59 PM", "Not submitted")
+            manager = DatabaseManager(path)
+            await manager.init_db()
+            async with aiosqlite.connect(path) as db:
+                await db.execute(
+                    "INSERT INTO courses (id, name, status) VALUES (?, ?, ?)",
+                    (self.course.id, self.course.name, "Open"),
+                )
+                await db.execute(
+                    "INSERT INTO activities (id, course_id, title, due_date, status, fingerprint, is_active) VALUES (?, ?, ?, ?, ?, ?, 1)",
+                    ("legacy1", self.course.id, "Legacy", "11/9/26 3:59 PM", "Not submitted", old_fp),
+                )
+                await db.execute(
+                    "DELETE FROM schema_migrations WHERE name = 'utc_due_to_mnl_v1'"
+                )
+                await db.commit()
+            # Re-running init_db applies the one-time UTC->Manila migration.
+            await manager.init_db()
+            async with aiosqlite.connect(path) as db:
+                cursor = await db.execute(
+                    "SELECT due_date, fingerprint FROM activities WHERE id = 'legacy1'"
+                )
+                due, fp = await cursor.fetchone()
+            self.assertEqual(due, "11/9/26 11:59 PM")
+            self.assertNotEqual(fp, old_fp)
+            self.assertEqual(
+                fp,
+                activity_fingerprint(self.course.id, "Legacy", "11/9/26 11:59 PM", "Not submitted"),
+            )
+            # A second init_db must NOT double-shift the corrected row.
+            await manager.init_db()
+            async with aiosqlite.connect(path) as db:
+                cursor = await db.execute(
+                    "SELECT due_date FROM activities WHERE id = 'legacy1'"
+                )
+                self.assertEqual((await cursor.fetchone())[0], "11/9/26 11:59 PM")
+        finally:
+            os.remove(path)
+
 
 class ExtractorTests(unittest.IsolatedAsyncioTestCase):
     async def test_points_and_due_date_are_parsed(self):
@@ -298,11 +343,13 @@ class ExtractorTests(unittest.IsolatedAsyncioTestCase):
             name="FEEDBACK AND CONTROL SYSTEMS",
             internal_id="_170077_1",
         )
+        # Blackboard renders UTC on this deployment, so a Manila 11:59 PM
+        # deadline is scraped as 3:59 PM UTC and must be shifted to local.
         page = _FakePage(
             [
                 "Nov\n8\nCoursework 1.1\n"
                 "Assignment · CPE121-4_C1_2Q2627\n"
-                "Sun · 11/8/26 · 11:59 PM"
+                "Sun · 11/8/26 · 3:59 PM"
             ]
         )
         activities = await extract_todo_activities(page, [course])
@@ -505,6 +552,29 @@ class DateUtilityTests(unittest.TestCase):
         self.assertIsNotNone(parsed)
         # Asia/Manila is UTC+8.
         self.assertEqual(parsed.hour, 12)
+
+    def test_utc_due_is_converted_to_manila(self):
+        with patch.object(config, "TIMEZONE", "Asia/Manila"), patch.object(
+            config, "BLACKBOARD_SCRAPED_TIMES_UTC", True
+        ):
+            # The screenshot case: Manila 11:59 PM scraped as UTC 3:59 PM.
+            self.assertEqual(
+                convert_utc_due_to_local("11/9/26 3:59 PM"), "11/9/26 11:59 PM"
+            )
+            # Date rollover: late-evening UTC becomes early-morning next day.
+            self.assertEqual(
+                convert_utc_due_to_local("11/9/26 8:00 PM"), "11/10/26 4:00 AM"
+            )
+            # Date-only and ongoing values pass through untouched.
+            self.assertEqual(convert_utc_due_to_local("11/9/26"), "11/9/26")
+            self.assertEqual(convert_utc_due_to_local("Ongoing"), "Ongoing")
+            self.assertIsNone(convert_utc_due_to_local(None))
+
+    def test_utc_conversion_disabled_flag_passes_through(self):
+        with patch.object(config, "BLACKBOARD_SCRAPED_TIMES_UTC", False):
+            self.assertEqual(
+                convert_utc_due_to_local("11/9/26 3:59 PM"), "11/9/26 3:59 PM"
+            )
 
 
 class SynchronizerTests(unittest.IsolatedAsyncioTestCase):

@@ -13,7 +13,7 @@ import re
 from dataclasses import dataclass
 from typing import Any, Dict, List, Optional
 
-from utils.dates import parse_due_datetime
+from utils.dates import convert_utc_due_to_local, parse_due_datetime
 
 logger = logging.getLogger("blackboard.activities")
 
@@ -241,6 +241,12 @@ async def extract_todo_activities(page, courses: list) -> List[Activity]:
                 elif date_parts:
                     due_date_str = " ".join(date_parts)
 
+        # Blackboard on this deployment renders due times in UTC even when
+        # the browser requests Asia/Manila, so shift scraped datetimes to
+        # local time here (date-only and "Ongoing" pass through untouched).
+        if due_date_str:
+            due_date_str = convert_utc_due_to_local(due_date_str)
+
         activities.append(
             Activity(
                 id=stable_activity_id(matched_course.id, title),
@@ -355,6 +361,12 @@ async def extract_course_activities(
                 elif "not submitted" in cell_lower:
                     found_status = "Not submitted"
             status = found_status or "Not submitted"
+
+        # See To Do extractor: gradebook wall-times also arrive in UTC on
+        # this deployment and must be shifted to Asia/Manila (date-only
+        # values pass through unchanged).
+        if due_date:
+            due_date = convert_utc_due_to_local(due_date)
 
         activities.append(
             Activity(

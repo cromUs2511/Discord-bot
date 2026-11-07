@@ -15,7 +15,13 @@ from database.models import INDEXES_SQL, SCHEMA_SQL
 from blackboard.courses import Course
 from blackboard.announcements import Announcement
 from blackboard.activities import Activity, activity_fingerprint
-from utils.dates import due_sort_datetime, is_date_only, now_local, parse_due_datetime
+from utils.dates import (
+    convert_utc_due_to_local,
+    due_sort_datetime,
+    is_date_only,
+    now_local,
+    parse_due_datetime,
+)
 
 logger = logging.getLogger("database")
 
@@ -125,17 +131,56 @@ class DatabaseManager:
                 )
                 logger.info("Migrated %s: added is_active column", table)
 
-        # Timezone correction: fix any legacy activities scraped under UTC (e.g. 3:59 PM -> 11:59 PM)
+        # Timezone correction: legacy rows scraped in UTC (e.g. Manila
+        # 11:59 PM stored as '3:59 PM') are converted to Asia/Manila here.
+        # This must run with proper UTC->local arithmetic (+8h, with
+        # date-rollover) for EVERY datetime, and must update the stored
+        # fingerprint alongside due_date. The previous string REPLACE only
+        # fixed exactly '3:59 PM', and because fingerprints were left
+        # stale the next sync treated the corrected row as a genuine
+        # deadline change and reverted it back to UTC — hence the persistent
+        # 3:59 PM display. Rows ending '11:59 PM' are skipped because the
+        # earlier REPLACE already corrected those (converting them again
+        # would push them to 7:59 AM next day). The whole correction runs
+        # exactly once (guarded by schema_migrations) so later restarts
+        # never double-shift already-local rows.
         try:
-            await db.execute(
-                """
-                UPDATE activities 
-                SET due_date = REPLACE(due_date, '3:59 PM', '11:59 PM')
-                WHERE due_date LIKE '%3:59 PM'
-                """
+            cursor = await db.execute(
+                "SELECT 1 FROM schema_migrations WHERE name = ?", ("utc_due_to_mnl_v1",)
             )
+            if not await cursor.fetchone():
+                cursor = await db.execute(
+                    "SELECT id, course_id, title, due_date, status FROM activities "
+                    "WHERE due_date IS NOT NULL AND due_date LIKE '%:%' "
+                    "AND LOWER(due_date) != 'ongoing'"
+                )
+                legacy_rows = await cursor.fetchall()
+                for row in legacy_rows:
+                    old_value = row["due_date"]
+                    if (old_value or "").strip().endswith("11:59 PM"):
+                        continue
+                    converted = convert_utc_due_to_local(old_value)
+                    if converted and converted != old_value:
+                        await db.execute(
+                            "UPDATE activities SET due_date = ?, fingerprint = ? WHERE id = ?",
+                            (
+                                converted,
+                                activity_fingerprint(
+                                    row["course_id"], row["title"], converted, row["status"]
+                                ),
+                                row["id"],
+                            ),
+                        )
+                        logger.info(
+                            "Timezone migration: %s '%s' -> '%s'",
+                            row["title"], old_value, converted,
+                        )
+                await db.execute(
+                    "INSERT OR IGNORE INTO schema_migrations (name) VALUES (?)",
+                    ("utc_due_to_mnl_v1",),
+                )
         except Exception:
-            pass
+            logger.exception("Timezone due-date migration failed (ignored)")
 
     # ------------------------------------------------------------------
     # Courses

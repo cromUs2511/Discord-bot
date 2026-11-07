@@ -46,6 +46,12 @@ CREATE TABLE IF NOT EXISTS activities (
     FOREIGN KEY(course_id) REFERENCES courses(id)
 );
 
+-- One-time schema/data migrations applied (name, applied_at)
+CREATE TABLE IF NOT EXISTS schema_migrations (
+    name TEXT PRIMARY KEY,
+    applied_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+);
+
 -- Notification History to guarantee an auditable record of sent messages
 CREATE TABLE IF NOT EXISTS notification_history (
     id INTEGER PRIMARY KEY AUTOINCREMENT,

@@ -83,6 +83,61 @@ def due_sort_datetime(value: Optional[str]) -> datetime:
     return datetime.max
 
 
+def _format_due_local(dt: datetime) -> str:
+    """
+    Format a datetime in Blackboard style: 'M/D/YY h:MM AM' (no leading
+    zeros on month/day/hour), e.g. '11/9/26 11:59 PM'.
+    """
+    hour12 = dt.hour % 12 or 12
+    ampm = "AM" if dt.hour < 12 else "PM"
+    return f"{dt.month}/{dt.day}/{dt.year % 100:02d} {hour12}:{dt.minute:02d} {ampm}"
+
+
+def convert_utc_due_to_local(value: Optional[str]) -> Optional[str]:
+    """
+    Convert a UTC due-date string (as scraped from Blackboard on Railway)
+    into the configured local timezone (Asia/Manila, UTC+8).
+
+    Why this exists: Blackboard Ultra serves due times relative to the
+    account/course server timezone, which on this deployment is UTC,
+    regardless of the Playwright browser's ``timezone_id``. A Manila
+    deadline of 11:59 PM therefore arrives as "3:59 PM" UTC, an 8-hour
+    mis-sync. Shifting every datetime scraped from Blackboard by +8h
+    (with date-rollover, e.g. 6:00 PM UTC -> 2:00 AM next day Manila)
+    restores the correct deadline.
+
+    Passthrough rules:
+      - None / empty / "Ongoing" / date-only strings are returned unchanged
+        (date-only deadlines have no time to shift).
+      - If ``BLACKBOARD_SCRAPED_TIMES_UTC`` is false, values are returned
+        unchanged (for deployments where Blackboard already renders local).
+      - Unparseable values are returned unchanged (never replace a deadline
+        with something worse).
+    """
+    if not value:
+        return value
+    cleaned = " ".join(str(value).split())
+    if not cleaned or cleaned.lower() in {"ongoing", "no deadline", "none"}:
+        return value
+    if not getattr(config, "BLACKBOARD_SCRAPED_TIMES_UTC", True):
+        return value
+    if is_date_only(cleaned):
+        return value
+    if ":" not in cleaned:
+        return value
+
+    parsed = parse_due_datetime(cleaned)
+    if parsed is None:
+        return value
+
+    try:
+        utc_dt = pytz.utc.localize(parsed)
+        local_dt = utc_dt.astimezone(local_timezone()).replace(tzinfo=None)
+    except Exception:
+        return value
+    return _format_due_local(local_dt)
+
+
 def is_date_only(value: Optional[str]) -> bool:
     """True when a due date has no time component (e.g. '11/8/26')."""
     if not value:
