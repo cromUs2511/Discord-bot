@@ -125,6 +125,18 @@ class DatabaseManager:
                 )
                 logger.info("Migrated %s: added is_active column", table)
 
+        # Timezone correction: fix any legacy activities scraped under UTC (e.g. 3:59 PM -> 11:59 PM)
+        try:
+            await db.execute(
+                """
+                UPDATE activities 
+                SET due_date = REPLACE(due_date, '3:59 PM', '11:59 PM')
+                WHERE due_date LIKE '%3:59 PM'
+                """
+            )
+        except Exception:
+            pass
+
     # ------------------------------------------------------------------
     # Courses
     # ------------------------------------------------------------------

@@ -1,15 +1,17 @@
 FROM python:3.12-slim
 
-# Unbuffered output and non-interactive debian frontend
+# Unbuffered output, non-interactive debian frontend, and Asia/Manila timezone
 ENV PYTHONUNBUFFERED=1 \
-    DEBIAN_FRONTEND=noninteractive
+    DEBIAN_FRONTEND=noninteractive \
+    TZ=Asia/Manila
 
 WORKDIR /app
 
-# Install base OS dependencies for Playwright
+# Install base OS dependencies for Playwright and timezone data
 RUN apt-get update && apt-get install -y --no-install-recommends \
     curl \
     ca-certificates \
+    tzdata \
     && rm -rf /var/lib/apt/lists/*
 
 # Install Python requirements

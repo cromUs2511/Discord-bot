@@ -89,6 +89,8 @@ async def get_browser_context(
         context = await browser.new_context(
             storage_state=storage_state_arg,
             viewport={"width": 1280, "height": 800},
+            timezone_id=config.TIMEZONE,
+            locale="en-PH",
         )
 
         try:
