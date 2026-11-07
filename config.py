@@ -37,6 +37,8 @@ def _env_str(name: str, default: str = "") -> str:
     # Strip any enclosing double or single quotes if entered by user
     if (val.startswith('"') and val.endswith('"')) or (val.startswith("'") and val.endswith("'")):
         val = val[1:-1].strip()
+    if not val:
+        return default
     return val
 
 
