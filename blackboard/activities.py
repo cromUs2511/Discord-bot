@@ -11,11 +11,13 @@ import hashlib
 import logging
 import re
 from dataclasses import dataclass
+from datetime import datetime
 from typing import Any, Dict, List, Optional
 
 import config
 from utils.dates import (
     convert_utc_due_to_local,
+    local_timezone,
     parse_due_datetime,
     should_convert_scraped_times,
 )
@@ -50,6 +52,76 @@ _DATE_RE = re.compile(
 )
 _POINTS_RE = re.compile(r"^\d+(?:\.\d+)?\s*/\s*\d+(?:\.\d+)?$")
 _TITLE_SUFFIX_RE = re.compile(r"\s+(?:submission|assignment)$", re.IGNORECASE)
+_DATETIME_VALUE_RE = re.compile(
+    r"\d{1,2}/\d{1,2}/\d{2,4}\s+\d{1,2}:\d{2}\s*(?:[AP]M)?"
+    r"|[A-Za-z]{3,9}\s+\d{1,2},?\s+\d{4}\s+(?:at\s+)?\d{1,2}:\d{2}\s*[AP]M"
+    r"|\d{4}-\d{2}-\d{2}[T ]\d{2}:\d{2}(?::\d{2}(?:\.\d+)?)?(?:Z|[+-]\d{2}:\d{2})?",
+    re.IGNORECASE,
+)
+_TIME_VALUE_RE = re.compile(r"\b\d{1,2}:\d{2}\s*(?:[AP]M)?\b", re.IGNORECASE)
+
+
+def _due_datetime_from_metadata(
+    values: List[str], visible_due_date: Optional[str]
+) -> tuple[Optional[str], bool]:
+    """Find a full due timestamp hidden in Blackboard labels or date attributes."""
+    visible_dt = parse_due_datetime(visible_due_date)
+
+    for value in values:
+        for match in _DATETIME_VALUE_RE.finditer(value):
+            candidate = match.group(0).strip()
+            iso_candidate = candidate.replace("Z", "+00:00")
+            try:
+                parsed_iso = datetime.fromisoformat(iso_candidate)
+            except ValueError:
+                parsed_iso = None
+
+            if parsed_iso is not None:
+                if parsed_iso.tzinfo is not None:
+                    parsed_iso = parsed_iso.astimezone(local_timezone()).replace(
+                        tzinfo=None
+                    )
+                    is_absolute_time = True
+                else:
+                    is_absolute_time = False
+            else:
+                candidate = re.sub(r"\s+at\s+", " ", candidate, flags=re.IGNORECASE)
+                parsed_iso = parse_due_datetime(candidate)
+                is_absolute_time = False
+
+            if parsed_iso is None or (visible_dt and parsed_iso.date() != visible_dt.date()):
+                continue
+
+            hour12 = parsed_iso.hour % 12 or 12
+            ampm = "AM" if parsed_iso.hour < 12 else "PM"
+            formatted = (
+                f"{parsed_iso.month}/{parsed_iso.day}/{parsed_iso.year % 100:02d} "
+                f"{hour12}:{parsed_iso.minute:02d} {ampm}"
+            )
+            return formatted, is_absolute_time
+
+        if visible_dt:
+            time_match = _TIME_VALUE_RE.search(value)
+            if time_match:
+                time_value = time_match.group(0).strip()
+                parsed_time = None
+                for time_format in ("%I:%M %p", "%H:%M"):
+                    try:
+                        parsed_time = datetime.strptime(time_value, time_format).time()
+                        break
+                    except ValueError:
+                        continue
+                if parsed_time:
+                    parsed = datetime.combine(visible_dt.date(), parsed_time)
+                    hour12 = parsed.hour % 12 or 12
+                    ampm = "AM" if parsed.hour < 12 else "PM"
+                    return (
+                        f"{parsed.month}/{parsed.day}/{parsed.year % 100:02d} "
+                        f"{hour12}:{parsed.minute:02d} {ampm}",
+                        False,
+                    )
+
+    return None, False
 
 
 async def _browser_offset_minutes(page) -> Optional[int]:
@@ -207,21 +279,48 @@ async def extract_todo_activities(page, courses: list) -> List[Activity]:
         r"""() => {
         const results = [];
         const elements = document.querySelectorAll('li, div[role="listitem"], .stream-entry');
+        const metadataFor = element => {
+            const nodes = [element, ...element.querySelectorAll('*')];
+            const values = [];
+            nodes.forEach(node => {
+                [...node.attributes].forEach(attribute => {
+                    if (/^(title|aria-label|datetime)$/i.test(attribute.name)
+                        || /(due|date|time)/i.test(attribute.name)) {
+                        if (attribute.value) values.push(attribute.value.trim());
+                    }
+                });
+            });
+            return [...new Set(values)];
+        };
         elements.forEach(el => {
             const text = (el.innerText || '').trim();
-            if ((text.includes('·') || text.includes('•') || text.includes('Assignment') || text.includes('Test'))
-                && (text.includes('PM') || text.includes('AM'))) {
-                if (text.length > 20 && text.length < 350) {
-                    results.push(text);
-                }
+            const metadata = metadataFor(el);
+            const hiddenText = (el.textContent || '').trim();
+            if (hiddenText && hiddenText !== text) metadata.push(hiddenText);
+            const combined = `${text}\n${metadata.join('\n')}`;
+            if (text.length > 20 && text.length < 350
+                && /(Assignment|Test|Quiz|Exam|·|•)/i.test(text)
+                && /\d{1,2}\/\d{1,2}\/\d{2,4}|\d{4}-\d{2}-\d{2}/.test(combined)) {
+                results.push({ text, metadata });
             }
         });
-        return [...new Set(results)];
+        const unique = new Map(results.map(item => [item.text, item]));
+        return [...unique.values()];
     }"""
     )
 
     for item in raw_items:
-        lines = [line.strip() for line in item.split("\n") if line.strip()]
+        if isinstance(item, dict):
+            item_text = str(item.get("text") or "")
+            metadata = [
+                str(value).strip()
+                for value in item.get("metadata", [])
+                if str(value).strip()
+            ]
+        else:
+            item_text = str(item)
+            metadata = []
+        lines = [line.strip() for line in item_text.split("\n") if line.strip()]
         if len(lines) < 3:
             continue
 
@@ -293,10 +392,22 @@ async def extract_todo_activities(page, courses: list) -> List[Activity]:
                 elif date_parts:
                     due_date_str = " ".join(date_parts)
 
+        metadata_due_date, absolute_time = _due_datetime_from_metadata(
+            metadata, due_date_str
+        )
+        if metadata_due_date:
+            due_date_str = (
+                metadata_due_date
+                if absolute_time
+                else convert_utc_due_to_local(
+                    metadata_due_date, force=should_convert
+                )
+            )
+
         # Shift UTC-scraped datetimes to local only when the browser is
         # not already rendering local time (see _scraped_should_convert).
         # Date-only and "Ongoing" pass through untouched.
-        if due_date_str:
+        elif due_date_str:
             due_date_str = convert_utc_due_to_local(due_date_str, force=should_convert)
 
         activities.append(
@@ -346,12 +457,30 @@ async def extract_course_activities(
         r"""() => {
         const rows = [];
         const trs = document.querySelectorAll('tbody tr, [role="row"], .gradebook-row');
+        const metadataFor = element => {
+            const nodes = [element, ...element.querySelectorAll('*')];
+            const values = [];
+            nodes.forEach(node => {
+                [...node.attributes].forEach(attribute => {
+                    if (/^(title|aria-label|datetime)$/i.test(attribute.name)
+                        || /(due|date|time)/i.test(attribute.name)) {
+                        if (attribute.value) values.push(attribute.value.trim());
+                    }
+                });
+            });
+            return [...new Set(values)];
+        };
 
         trs.forEach(tr => {
             const cells = [];
             tr.querySelectorAll('td, [role="gridcell"], [role="cell"]').forEach(td => {
                 const txt = (td.innerText || '').trim();
-                if (txt) cells.push(txt);
+                const metadata = metadataFor(td);
+                const hiddenText = (td.textContent || '').trim();
+                if (hiddenText && hiddenText !== txt) metadata.push(hiddenText);
+                if (txt || metadata.length || hiddenText) {
+                    cells.push({ text: txt || hiddenText, metadata });
+                }
             });
 
             if (cells.length > 0) {
@@ -370,15 +499,30 @@ async def extract_course_activities(
         if not row:
             continue
 
-        title = row[0].strip()
+        row_texts = [
+            str(cell.get("text") or "").strip()
+            if isinstance(cell, dict)
+            else str(cell).strip()
+            for cell in row
+        ]
+        title = row_texts[0]
         if not title or title.lower() in _HEADER_TITLES:
             continue
 
         due_date = None
         points = None
+        due_metadata: List[str] = []
 
-        for cell in row[1:]:
-            stripped = cell.strip()
+        for index, cell in enumerate(row[1:], start=1):
+            if isinstance(cell, dict):
+                stripped = row_texts[index]
+                due_metadata.extend(
+                    str(value).strip()
+                    for value in cell.get("metadata", [])
+                    if str(value).strip()
+                )
+            else:
+                stripped = row_texts[index]
             cell_lower = stripped.lower()
 
             if _POINTS_RE.fullmatch(stripped):
@@ -390,14 +534,28 @@ async def extract_course_activities(
             elif _DATE_RE.fullmatch(stripped) or parse_due_datetime(stripped):
                 due_date = stripped
 
+        metadata_due_date, absolute_time = _due_datetime_from_metadata(
+            due_metadata, due_date
+        )
+        if metadata_due_date:
+            due_date = (
+                metadata_due_date
+                if absolute_time
+                else convert_utc_due_to_local(
+                    metadata_due_date, force=should_convert
+                )
+            )
+
         # Strict Submission & Grading Status Evaluation:
         # If any cell contains "submitted" or "attempt", it IS submitted!
         # Do not let "Not graded" overwrite the fact that student submitted it.
         is_submitted = any(
-            "submitted" in c.lower() or "attempt" in c.lower() for c in row[1:]
+            "submitted" in c.lower() or "attempt" in c.lower()
+            for c in row_texts[1:]
         )
         is_graded = any(
-            c.lower() == "graded" or "final grade" in c.lower() for c in row[1:]
+            c.lower() == "graded" or "final grade" in c.lower()
+            for c in row_texts[1:]
         )
 
         if is_graded:
@@ -407,7 +565,7 @@ async def extract_course_activities(
         else:
             # Check for past due or not submitted
             found_status = None
-            for cell in row[1:]:
+            for cell in row_texts[1:]:
                 cell_lower = cell.lower()
                 if "past due" in cell_lower or "overdue" in cell_lower:
                     found_status = "Past due"
@@ -416,7 +574,7 @@ async def extract_course_activities(
             status = found_status or "Not submitted"
 
         # See To Do extractor: shift only when browser is not already local.
-        if due_date:
+        if due_date and not metadata_due_date:
             due_date = convert_utc_due_to_local(due_date, force=should_convert)
 
         activities.append(

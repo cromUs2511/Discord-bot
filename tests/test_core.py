@@ -385,6 +385,43 @@ class ExtractorTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(len(activities), 1)
         self.assertEqual(activities[0].due_date, "11/9/26")
 
+    async def test_todo_hidden_datetime_metadata_fills_missing_time(self):
+        course = Course(
+            id="CPE121-4_C1_2Q2627",
+            name="FEEDBACK AND CONTROL SYSTEMS",
+            internal_id="_170077_1",
+        )
+        page = _FakePage(
+            [
+                {
+                    "text": (
+                        "Nov\n8\nCoursework 1.2\n"
+                        "Assignment · CPE121-4_C1_2Q2627\n"
+                        "Sun · 11/9/26"
+                    ),
+                    "metadata": ["2026-11-09T15:59:00Z"],
+                }
+            ]
+        )
+        activities = await extract_todo_activities(page, [course])
+        self.assertEqual(len(activities), 1)
+        self.assertEqual(activities[0].due_date, "11/9/26 11:59 PM")
+
+    async def test_gradebook_hidden_datetime_metadata_fills_missing_time(self):
+        page = _FakePage(
+            [
+                [
+                    "Coursework 1.1",
+                    {"text": "11/8/26", "metadata": ["3:59 PM"]},
+                    "Not submitted",
+                ]
+            ]
+        )
+        activities = await extract_course_activities(
+            page, "CPE121-4_C1_2Q2627", "FEEDBACK AND CONTROL SYSTEMS"
+        )
+        self.assertEqual(activities[0].due_date, "11/8/26 11:59 PM")
+
     async def test_todo_singapore_no_double_conversion(self):
         """Singapore/SGT browser already renders local; auto must not shift."""
         course = Course(
