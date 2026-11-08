@@ -5,7 +5,9 @@ database/db.py — Asynchronous database layer using aiosqlite.
 from __future__ import annotations
 
 import logging
+import re
 from contextlib import asynccontextmanager
+from datetime import datetime
 from typing import Any, AsyncIterator, Dict, List, Optional, Tuple
 
 import aiosqlite
@@ -615,15 +617,32 @@ class DatabaseManager:
             FROM announcements a
             JOIN courses c ON a.course_id = c.id
             WHERE {' AND '.join(clauses)}
-            ORDER BY a.first_detected_at DESC
-            LIMIT ?
         """
-        params.append(limit)
 
         async with self._connect() as db:
             cursor = await db.execute(sql, params)
             rows = await cursor.fetchall()
-            return [dict(r) for r in rows]
+            items = [dict(r) for r in rows]
+
+        def announcement_date(item: Dict[str, Any]) -> datetime:
+            posted_date = item.get("posted_date")
+            posted_datetime = parse_due_datetime(posted_date)
+            if posted_datetime is None and posted_date:
+                # Blackboard may separate a posted date and time with a comma.
+                normalized_date = re.sub(
+                    r",(?=\s+\d{1,2}:\d{2}\s*[AP]M$)",
+                    "",
+                    posted_date,
+                    flags=re.IGNORECASE,
+                )
+                posted_datetime = parse_due_datetime(normalized_date)
+
+            if posted_datetime is not None:
+                return posted_datetime
+            return parse_due_datetime(item.get("first_detected_at")) or datetime.min
+
+        items.sort(key=announcement_date, reverse=True)
+        return items[:limit]
 
     async def get_activities(
         self,

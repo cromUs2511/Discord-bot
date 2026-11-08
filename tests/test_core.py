@@ -179,6 +179,43 @@ class DatabaseTests(unittest.IsolatedAsyncioTestCase):
             [r["due_date"] for r in rows], ["11/8/26", "2/1/27", "11/30/27"]
         )
 
+    async def test_announcements_are_sorted_by_posted_date_before_limit(self):
+        announcements = [
+            Announcement(
+                id="old",
+                course_id=self.course.id,
+                course_name=self.course.name,
+                title="Older post",
+                content="Older content",
+                posted_date="10/28/26, 1:55 PM",
+            ),
+            Announcement(
+                id="newest",
+                course_id=self.course.id,
+                course_name=self.course.name,
+                title="Newest post",
+                content="Newest content",
+                posted_date="11/2/26, 6:11 PM",
+            ),
+            Announcement(
+                id="middle",
+                course_id=self.course.id,
+                course_name=self.course.name,
+                title="Middle post",
+                content="Middle content",
+                posted_date="10/29/26, 2:34 PM",
+            ),
+        ]
+        await self.db.process_announcements(announcements)
+
+        rows = await self.db.get_recent_announcements(
+            course_id=self.course.id, limit=2
+        )
+
+        self.assertEqual(
+            [row["title"] for row in rows], ["Newest post", "Middle post"]
+        )
+
     async def test_overdue_handles_not_submitted_and_today(self):
         yesterday = (datetime.now() - timedelta(days=1)).strftime("%m/%d/%y")
         today = datetime.now().strftime("%m/%d/%y")
