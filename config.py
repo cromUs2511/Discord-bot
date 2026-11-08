@@ -155,7 +155,7 @@ def scraped_times_mode() -> str:
 # ------------------------------------------------------------------
 # Scheduling
 # ------------------------------------------------------------------
-SYNC_INTERVAL_MINUTES: int = max(1, _env_int("SYNC_INTERVAL_MINUTES", 30))
+SYNC_INTERVAL_MINUTES: int = max(1, _env_int("SYNC_INTERVAL_MINUTES", 1))
 
 # ------------------------------------------------------------------
 # Timezone

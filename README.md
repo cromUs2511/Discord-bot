@@ -7,7 +7,7 @@ It uses your normal browser login (Microsoft 365 / Azure AD SSO + MFA), saves th
 ## Features
 
 - **One-time interactive login** with Playwright; cookies/localStorage are saved to `data/auth_state/session.json`.
-- **Headless background sync** every N minutes (default: 30).
+- **Headless background sync** every N minutes (default: 1). Blackboard is polled; notifications are not push-based and may be delayed by up to the configured interval plus scrape time.
 - **Per-course Discord channels** for Thesis, Circuits Lab, Circuits Lecture, and Feedback & Control, with a general-channel fallback.
 - **Change detection** via SQLite fingerprints:
   - new announcement / assignment
@@ -47,7 +47,7 @@ Copy `.env.example` to `.env` and fill in the values:
 | `NOTIFICATION_PING` | `@everyone`, `@here`, a role mention, or empty to disable |
 | `BLACKBOARD_URL` | e.g. `https://mapua.blackboard.com` (no trailing slash needed) |
 | `ACADEMIC_TERM` | Optional, e.g. `2Q2627`; empty auto-detects all terms |
-| `SYNC_INTERVAL_MINUTES` | Poll interval (minimum 1) |
+| `SYNC_INTERVAL_MINUTES` | Blackboard poll interval in minutes (minimum 1, default 1). Lower intervals reduce notification delay but increase Blackboard requests; a configured Railway variable overrides the default. |
 | `TIMEZONE` | IANA timezone, default `Asia/Manila` |
 | `INSTITUTION_NAME` | Footer branding text |
 | `LOG_LEVEL` | `INFO`, `DEBUG`, etc. |
@@ -83,7 +83,7 @@ On startup the bot:
 3. Starts the APScheduler sync job.
 4. Verifies the Blackboard session in the background.
 
-The first `/sync` performs the initial crawl. Subsequent runs only notify on changes.
+The bot performs an initial crawl on startup, then automatically polls for changes every minute by default. Subsequent runs only notify on changes. Set `SYNC_INTERVAL_MINUTES` in Railway to `1` as well if that variable is already configured there; Blackboard does not provide an instant push signal to this login-based scraper, so alert timing depends on the polling interval and scrape duration.
 
 ## Tests
 
